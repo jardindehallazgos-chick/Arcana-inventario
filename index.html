@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Arcana Vintage</title>
+<link rel="icon" id="favicon-link" href=""/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#0f0e0c;color:#f0ebe3;min-height:100vh;padding-bottom:70px}
+button{cursor:pointer;font-family:inherit}
+input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
+
+/* ── HEADER ── */
+#hdr{position:sticky;top:0;z-index:100;background:#0f0e0c;border-bottom:1px solid #2a2620;display:flex;align-items:center;gap:8px;padding:0 14px;height:50px;flex-wrap:nowrap;overflow:hidden}
+#logo{font-family:Georgia,serif;font-style:italic;font-size:19px;color:#c9a96e;white-space:nowrap}
+#logo2{font-size:9px;color:#6b6358;letter-spacing:2px;text-transform:uppercase;white-space:nowrap}
+#da{background:#f8717122;color:#f87171;border:1px solid #f8717144;border-radius:20px;padding:2px 9px;font-size:10px;font-weight:600;display:none;white-space:nowrap}
+#sync-ind{font-size:10px;color:#6b6358;margin-left:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+#hr{margin-left:auto;display:flex;gap:5px;align-items:center;flex-shrink:0}
+.hb{background:#1e1c18;border:1px solid #2a2620;border-radius:7px;padding:3px 9px;color:#a09480;font-size:10px;cursor:pointer;white-space:nowrap}
+.hbg{background:#1e1c18;border:1px solid #4ade8044;border-radius:7px;padding:3px 9px;color:#4ade80;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap}
+
+/* ── DESKTOP NAV (hidden on mobile) ── */
+#desknav{display:flex;gap:3px}
+.nb{background:transparent;border:1px solid transparent;border-radius:7px;padding:5px 10px;color:#8a8070;font-size:11px;cursor:pointer;white-space:nowrap}
+.nb.on{background:#1e1c18;border-color:#2a2620;color:#c9a96e}
+
+/* ── MOBILE BOTTOM NAV ── */
+#mobnav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:100;background:#0f0e0c;border-top:1px solid #2a2620;flex-direction:row;justify-content:space-around;padding:6px 0 8px}
+.mnb{display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:#6b6358;font-size:9px;padding:4px 8px;cursor:pointer;flex:1}
+.mnb.on{color:#c9a96e}
+.mnb .ico{font-size:18px;line-height:1}
+
+/* ── MAIN ── */
+#main{padding:14px;max-width:1300px;margin:0 auto}
+.tab{display:none}.tab.on{display:block}
+.box{background:#141210;border:1px solid #2a2620;border-radius:10px;overflow:hidden}
+.card{background:#141210;border:1px solid #2a2620;border-radius:12px;padding:15px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{padding:7px 10px;text-align:left;color:#6b6358;font-weight:500;font-size:10px;letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid #2a2620;white-space:nowrap}
+.tbl td{padding:7px 10px;border-bottom:1px solid #1e1c18;vertical-align:middle}
+.tbl tr:hover td{background:#1a1814}
+.inp{background:#0f0e0c;border:1px solid #2a2620;border-radius:8px;color:#f0ebe3;font-size:14px;padding:9px 12px;width:100%}
+.lbl{font-size:10px;color:#6b6358;text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:4px}
+.fld{margin-bottom:12px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.btn{background:#1e1c18;border:1px solid #2a2620;border-radius:7px;padding:7px 13px;color:#a09480;font-size:12px;cursor:pointer}
+.btna{background:#c9a96e;border:none;color:#0f0e0c;font-weight:700;border-radius:7px;padding:7px 13px;font-size:12px;cursor:pointer}
+.btns{padding:4px 9px;font-size:11px}
+.btnr{background:#2a1010;border:1px solid #4a1c1c;color:#f87171;border-radius:7px;padding:7px 13px;font-size:12px;cursor:pointer}
+.btno{background:transparent;border:1px solid #c9a96e44;color:#c9a96e;border-radius:7px;padding:4px 9px;font-size:11px;cursor:pointer}
+.pill{border-radius:20px;padding:2px 9px;font-size:11px;font-weight:600}
+.pg{background:#4ade8022;color:#4ade80}.pr{background:#f8717122;color:#f87171}
+
+/* ── MODAL ── */
+#mbg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:flex-end;justify-content:center;padding:0}
+#mbg.on{display:flex}
+#mbox{background:#141210;border:1px solid #2a2620;border-radius:14px 14px 0 0;width:100%;max-width:640px;max-height:92vh;overflow-y:auto}
+#mhd{display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid #2a2620;position:sticky;top:0;background:#141210;z-index:1}
+#mtit{font-family:Georgia,serif;font-size:16px;color:#c9a96e}
+#mclose{background:none;border:none;color:#6b6358;font-size:24px;line-height:1;cursor:pointer;padding:0 4px}
+#mbody{padding:18px}
+
+/* ── BARS & FILTERS ── */
+.bar{display:flex;gap:7px;margin-bottom:11px;flex-wrap:wrap;align-items:center}
+.sw{position:relative;flex:1 1 160px}
+.sw .ico{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#6b6358;pointer-events:none}
+.sw input{padding-left:28px;height:38px}
+.cnt{font-size:11px;color:#6b6358;margin-bottom:8px}
+
+/* ── TYPOGRAPHY ── */
+.mono{font-family:monospace}.gold{color:#c9a96e;font-weight:600}
+.mut{color:#a09480}.sm{font-size:11px}.it{font-style:italic}
+.gp{color:#4ade80;font-weight:600}.gn{color:#f87171;font-weight:600}
+.ok{background:rgba(74,222,128,.13);border:1px solid rgba(74,222,128,.27);border-radius:10px;padding:11px 16px;margin-bottom:13px;color:#4ade80;font-weight:600;display:none}
+.wb{background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.27);border-radius:10px;padding:9px 14px;margin-bottom:13px;font-size:13px;color:#f87171;display:none}
+
+/* ── KPIS ── */
+.kgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:9px;margin-bottom:18px}
+.kpi{background:#141210;border:1px solid #2a2620;border-radius:10px;padding:12px}
+.kl{font-size:10px;color:#6b6358;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.kv{font-size:16px;font-weight:700}
+
+/* ── PROVIDERS ── */
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.ps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;padding-top:9px;border-top:1px solid #1e1c18;margin-top:9px}
+.pv{font-size:14px;font-weight:700;color:#c9a96e;text-align:center}
+.pl{font-size:10px;color:#6b6358;text-align:center}
+
+/* ── MISC ── */
+.fb{background:#0f0e0c;border:1px solid #2a2620;border-radius:8px;padding:10px 13px;font-size:12px;margin-bottom:11px}
+.fr{display:flex;justify-content:space-between;padding:3px 0}
+.h2{font-family:Georgia,serif;font-size:18px;color:#c9a96e;margin-bottom:13px}
+.h3{font-family:Georgia,serif;font-size:13px;font-style:italic;color:#a09480;margin-bottom:8px}
+
+/* ── POS ── */
+#poswrap{display:flex;flex-direction:column;gap:14px}
+#cbox{background:#141210;border:1px solid #2a2620;border-radius:13px;padding:15px}
+
+/* ── ETIQUETAS ── */
+#ewrap{display:grid;grid-template-columns:1fr 290px;gap:16px;align-items:start}
+#eside{background:#141210;border:1px solid #2a2620;border-radius:13px;padding:15px;position:sticky;top:58px}
+
+/* ── MOBILE CARDS (inventory rows as cards on small screens) ── */
+.mob-card{display:none;background:#141210;border:1px solid #2a2620;border-radius:10px;padding:12px;margin-bottom:8px}
+.mob-card-sku{font-family:monospace;color:#c9a96e;font-size:13px;font-weight:700}
+.mob-card-desc{font-size:14px;font-weight:500;margin:4px 0}
+.mob-card-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-top:1px solid #1e1c18;margin-top:4px}
+.mob-card-label{font-size:10px;color:#6b6358;text-transform:uppercase}
+.mob-card-val{font-size:13px}
+
+/* ── RESPONSIVE BREAKPOINTS ── */
+@media(min-width:769px){
+  #poswrap{flex-direction:row;align-items:start}
+  #poswrap>div:first-child{flex:1}
+  #cbox{width:340px;flex-shrink:0;position:sticky;top:58px}
+  #etiq-layout{display:grid;grid-template-columns:1fr 300px;gap:18px;align-items:start}
+  #etiq-layout .box{max-height:65vh}
+}
+@media(max-width:768px){
+  body{padding-bottom:75px}
+  #hdr{height:46px;padding:0 10px}
+  #logo{font-size:17px}
+  #logo2{display:none}
+  #sync-ind{max-width:80px;font-size:9px}
+  #desknav{display:none}
+  #mobnav{display:flex}
+  #main{padding:10px}
+  #mbg{align-items:flex-end}
+  #mbox{border-radius:18px 18px 0 0;max-height:88vh}
+  .g2,.g3{grid-template-columns:1fr}
+  #poswrap{grid-template-columns:1fr}
+  #ewrap{grid-template-columns:1fr}
+  #cbox,#eside{position:static}
+  .kgrid{grid-template-columns:1fr 1fr}
+  .pgrid{grid-template-columns:1fr}
+  /* Hide table, show cards on mobile */
+  .desk-only{display:none!important}
+  .mob-card{display:block}
+  /* Make filters scroll horizontally */
+  .bar{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
+  .bar select{flex-shrink:0;font-size:12px;height:34px}
+  .bar button{flex-shrink:0;white-space:nowrap}
+  .sw{flex:1 0 160px}
+  /* Bigger touch targets */
+  .inp{font-size:16px;padding:10px 12px} /* 16px prevents iOS zoom */
+  .btn,.btna,.btnr,.btno{padding:9px 13px;font-size:13px}
+  .btns{padding:7px 11px;font-size:12px}
+}
+@media(min-width:769px){
+  .mob-only{display:none!important}
+}
+/* ── ACCESS LOCK ── */
+#acclock{position:fixed;inset:0;background:#0f0e0c;z-index:999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:20px}
+#acclock .lg{font-family:Georgia,serif;font-style:italic;font-size:26px;color:#c9a96e}
+#acclockbox{background:#141210;border:1px solid #2a2620;border-radius:14px;padding:24px;width:100%;max-width:300px}
+#acclock-err{color:#f87171;font-size:12px;margin-top:8px;min-height:16px}
+#logo-img{height:26px;width:26px;border-radius:6px;object-fit:cover;margin-right:2px;display:none;vertical-align:middle}
+</style>
+</head>
+<body>
+<div id="apa-alerta" style="display:none;position:fixed;top:10px;right:10px;z-index:9000;background:#1a1610;border:1px solid #f59e0b66;border-radius:10px;padding:9px 12px;max-width:270px;box-shadow:0 4px 16px rgba(0,0,0,.5);font-size:12px">
+  <div style="display:flex;align-items:center;gap:8px">
+    <span style="font-size:15px">&#9200;</span>
+    <span id="apa-alerta-txt" style="color:#f59e0b;font-weight:600;cursor:pointer;flex:1"></span>
+    <button onclick="cerrarAlertaApa()" style="background:none;border:none;color:#6b6358;font-size:16px;cursor:pointer;padding:0 2px;line-height:1">&times;</button>
+  </div>
+  <div id="apa-alerta-lista" style="display:none;margin-top:7px;padding-top:7px;border-top:1px solid #2a2620"></div>
+</div>
+<div id="acclock">
+  <div class="lg">Arcana</div>
+  <div id="acclockbox">
+    <div class="fld"><label class="lbl">Contraseña de acceso</label><input class="inp" type="password" id="acc-pass-input" placeholder="••••" autocomplete="off"/></div>
+    <button class="btna" style="width:100%" onclick="tryAccessLogin()">Entrar</button>
+    <div id="acclock-err"></div>
+  </div>
+</div>
+<div id="appwrap" style="display:none">
+<div id="hdr">
+  <img id="logo-img" src=""/>
+  <span id="logo">Arcana</span>
+  <span id="logo2">Vintage</span>
+  <span id="sync-status" id="sync-ind" style="font-size:10px;color:#6b6358;margin-left:6px">Conectando...</span>
+  <span id="da"></span>
+  <div id="hr">
+    <button class="hb" onclick="restaurar()">Restaurar</button>
+    <button class="hbg" onclick="respaldar()">Respaldar</button>
+    <input type="file" id="frest" accept=".json" style="display:none"/>
+  </div>
+  <nav id="desknav">
+    <button class="nb on" onclick="reqAdmin('pos',this)" id="btn-pos">Punto de venta</button>
+    <button class="nb" onclick="reqAdmin('apartados',this)" id="btn-apa">Apartados</button>
+    <button class="nb" onclick="reqAdmin('etiq-pub',this)" id="btn-etiq-pub">Etiquetas</button>
+    <button class="nb" onclick="reqAdmin('inventario',this)" id="btn-inv">Inventario</button>
+    <button class="nb" onclick="reqAdmin('proveedores',this)" id="btn-prov">Proveedores</button>
+    <button class="nb" onclick="reqAdmin('reportes',this)" id="btn-rep">Reportes</button>
+  </nav>
+</div>
+<div id="main">
+
+  <!-- POS -->
+  <div id="tab-pos" class="tab on">
+    <div id="poswrap">
+      <!-- Search + Results -->
+      <div id="pos-search">
+        <div class="h2">Punto de venta</div>
+        <div id="pok" class="ok">Venta registrada correctamente</div>
+        <div class="sw" style="margin-bottom:13px">
+          <span class="ico">&#128269;</span>
+          <input class="inp" id="pb" placeholder="Buscar clave o descripcion..." autocomplete="off" autocorrect="off" spellcheck="false" name="busqueda-pos-nosave" style="height:42px;font-size:15px;padding-left:30px"/>
+        </div>
+        <div id="pres" class="box" style="display:none;margin-bottom:13px"></div>
+      </div>
+      <!-- Carrito -->
+      <div id="cbox">
+        <div style="font-family:Georgia,serif;font-size:16px;color:#c9a96e;margin-bottom:13px">Carrito</div>
+        <div id="ci"><div style="color:#4a4540;font-size:13px;text-align:center;padding:18px 0">Busca y agrega prendas</div></div>
+        <div id="ct" style="display:none">
+          <div style="border-top:1px solid #2a2620;padding-top:11px;margin-top:7px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;color:#a09480;margin-bottom:6px"><span>Subtotal</span><span id="csub"></span></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:9px">
+              <span style="font-size:12px;color:#6b6358;white-space:nowrap">Desc.</span>
+              <input type="number" class="inp" id="cdesc" value="0" min="0" oninput="calcC()" onchange="calcC()" style="height:29px;padding:0 8px;width:70px"/>
+              <select class="inp" id="cdesc-tipo" onchange="calcC()" style="height:29px;padding:0 6px;width:60px">
+                <option value="monto">$</option>
+                <option value="pct">%</option>
+              </select>
+            </div>
+            <div id="cdesc-monto" style="display:none;justify-content:space-between;margin-bottom:9px"></div>
+            <div class="fld" style="margin-bottom:11px">
+              <label class="lbl">Metodo de pago</label>
+              <select class="inp" id="mpago" style="height:36px;padding:0 10px">
+                <option value="efectivo">Efectivo</option>
+                <option value="tarjeta">Tarjeta</option>
+                <option value="transferencia">Transferencia</option>
+              </select>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:#c9a96e;margin-bottom:13px"><span>Total</span><span id="ctot"></span></div>
+            <button class="btna" style="width:100%;padding:11px 0;font-size:14px;border-radius:10px" onclick="cobrar()">Registrar venta</button>
+            <button class="btno" style="width:100%;padding:9px 0;font-size:13px;border-radius:10px;margin-top:8px" onclick="apartarCarrito()">Apartar carrito</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Historial siempre abajo -->
+    <div class="h3" style="margin-top:16px">Corte de caja de hoy</div>
+    <div class="card" style="margin-bottom:16px">
+      <div id="corte-body"></div>
+    </div>
+    <div class="h3" style="margin-top:16px">Ventas de hoy</div>
+    <div class="box"><div class="tw"><table class="tbl">
+      <thead><tr><th>Fecha</th><th>Pago</th><th>Total</th><th>Prendas vendidas</th></tr></thead>
+      <tbody id="ph"></tbody>
+    </table></div></div>
+  </div>
+
+  <!-- ETIQUETAS PUBLICAS -->
+  <div id="tab-etiq-pub" class="tab">
+    <div class="h2">Etiquetas</div>
+    <div class="bar">
+      <div class="sw"><span class="ico">&#128269;</span><input class="inp" id="epb-busq" placeholder="Buscar clave o descripcion..." autocomplete="off" autocorrect="off" spellcheck="false" name="busqueda-etiq-nosave" style="height:36px;padding-left:28px"/></div>
+      <button class="btn btns" onclick="epbAll()">Seleccionar todo</button>
+      <button class="btn btns" onclick="epbNone()">Limpiar</button>
+    </div>
+    <div id="etiq-layout">
+      <div class="box" style="max-height:55vh;overflow-y:auto;margin-bottom:12px"><div id="epb-lista"></div></div>
+      <div style="background:#141210;border:1px solid #2a2620;border-radius:13px;padding:15px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
+          <div style="font-family:Georgia,serif;font-size:15px;color:#c9a96e">Vista previa</div>
+          <div style="display:flex;align-items:center;gap:7px">
+            <span class="sm mut">Copias:</span>
+            <input type="number" class="inp" id="epb-cp" value="1" min="1" max="20" style="width:50px;padding:4px 7px;height:30px"/>
+          </div>
+        </div>
+        <div id="epb-prev" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+        <button class="btna" id="epb-btn" style="width:100%;padding:10px 0;font-size:13px;border-radius:10px" onclick="epbImprimir()">Imprimir etiquetas</button>
+        <div class="sm mut" style="margin-top:6px;text-align:center">Formato 5x2.8cm</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- INVENTARIO -->
+  <div id="tab-inventario" class="tab">
+    <div id="dw" class="wb"></div>
+    <div class="bar">
+      <div class="sw"><span class="ico">&#128269;</span><input class="inp" id="ib" placeholder="Buscar clave, descripcion, notas..." autocomplete="off" autocorrect="off" spellcheck="false" name="busqueda-inv-nosave"/></div>
+      <select class="inp" id="ifc" style="width:auto;height:36px;padding:0 9px" onchange="RI()"><option value="">Todas las categorias</option></select>
+      <select class="inp" id="ife" style="width:auto;height:36px;padding:0 9px" onchange="RI()"><option value="">Todas las epocas</option></select>
+      <select class="inp" id="iftl" style="width:auto;height:36px;padding:0 9px" onchange="RI()"><option value="">Todas las tallas</option></select>
+      <select class="inp" id="ifp" style="width:auto;height:36px;padding:0 9px" onchange="RI()"><option value="">Todos los proveedores</option></select>
+      <select class="inp" id="ifstock" style="width:auto;height:36px;padding:0 9px" onchange="RI()">
+        <option value="">Todas las piezas</option>
+        <option value="disponibles">Solo disponibles</option>
+        <option value="vendidos">Solo vendidos</option>
+      </select>
+      <button class="btn" onclick="aImp()">Importar datos</button>
+      <button class="btn btns" id="btn-del-sel" style="display:none;color:#f87171;border-color:#f8717144" onclick="delSel()">Eliminar seleccionadas</button>
+      <button class="btna" onclick="aItem(null)">+ Nueva prenda</button>
+    </div>
+    <div id="ic" class="cnt"></div>
+    <div class="box"><div class="tw"><table class="tbl">
+      <thead><tr>
+        <th style="width:36px"><input type="checkbox" id="chk-all" style="cursor:pointer;width:15px;height:15px;accent-color:#c9a96e"/></th>
+        <th>Clave</th><th>Descripcion</th><th>Categoria</th><th>Epoca</th><th>Talla</th><th>Cant.</th>
+        <th>Proveedor</th><th>Costo prov.</th><th>Ganancia real</th><th>Precio venta</th><th>Ingreso</th><th></th>
+      </tr></thead>
+      <tbody id="itb"></tbody>
+    </table></div></div>
+  <div id="inv-cards" class="mob-only"></div>
+  </div>
+
+  <!-- PROVEEDORES -->
+  <div id="tab-proveedores" class="tab">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:17px">
+      <div class="h2" style="margin:0">Proveedores y Consignadores</div>
+      <div style="display:flex;gap:8px">
+        <button class="btno" onclick="editarPlantillaContrato()">Plantilla de contrato</button>
+        <button class="btna" onclick="aProv(null)">+ Nuevo proveedor</button>
+      </div>
+    </div>
+    <div id="pgrid" class="pgrid"></div>
+  </div>
+
+  <!-- REPORTES -->
+  <div id="tab-apartados" class="tab">
+    <div style="margin-bottom:15px">
+      <div class="h2" style="margin:0">Apartados</div>
+      <div class="sm mut" style="margin-top:4px">Crea apartados desde el boton "Apartar" en el Punto de venta.</div>
+    </div>
+    <div id="apa-ok" class="ok">Operacion realizada</div>
+    <div class="bar">
+      <div class="sw"><span class="ico">&#128269;</span><input class="inp" id="apa-busq" placeholder="Buscar cliente, clave o producto..." autocomplete="off" autocorrect="off" spellcheck="false" name="busqueda-apa-nosave" oninput="RApa()"/></div>
+      <select class="inp" id="apa-filtro" onchange="RApa()" style="flex:0 0 auto;width:auto">
+        <option value="activos">Activos</option>
+        <option value="resguardo">En resguardo</option>
+        <option value="vencidos">Vencidos</option>
+        <option value="liquidados">Liquidados</option>
+        <option value="todos">Todos</option>
+      </select>
+    </div>
+    <div id="apa-lista"></div>
+    <div class="h3" style="margin-top:24px">Saldos a favor de clientes</div>
+    <div class="sm mut" style="margin-bottom:10px">Anticipos de apartados vencidos que el cliente puede usar en otra compra (15 dias).</div>
+    <div id="apa-saldos"></div>
+  </div>
+
+  <div id="tab-reportes" class="tab">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+      <div class="h2" style="margin:0">Reportes</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btns" onclick="expCSV()">Exportar Excel (CSV)</button><button class="btn btns" onclick="expProvPDF()">Exportar PDF por proveedor</button>
+        <button class="btn btns" onclick="reporteGeneralVentas()">Reporte general de ventas</button><button class="btn btns" onclick="reporteConsignatarios()">Reporte de consignatarios</button>
+        <button class="btn btns" onclick="aLogo()">Subir logotipo</button>
+        <button class="btn btns" onclick="cambiarPassAcceso()">Cambiar contrasena de acceso</button>
+        <button class="btn btns" onclick="cambiarPass()">Cambiar contrasena admin</button>
+        <button class="btn btns" style="color:#f87171;border-color:#f8717144" onclick="cerrarSesionAdmin()">Cerrar sesion admin</button>
+      </div>
+    </div>
+    <div id="kgrid" class="kgrid"></div>
+    <div class="h3">Fiscal acumulado</div>
+    <div id="rfiscal" class="card" style="margin-bottom:22px"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div class="h3" style="margin:0">Por proveedor</div>
+      <select class="inp" id="rprov-filtro" onchange="RR()" style="width:auto;height:32px;padding:2px 10px;font-size:12px">
+        <option value="conventas">Solo con ventas</option>
+        <option value="todos">Todos los proveedores</option>
+      </select>
+    </div>
+    <div class="box" style="margin:10px 0 22px"><div class="tw"><table class="tbl">
+      <thead><tr><th>Proveedor</th><th>Tipo</th><th>En tienda</th><th>Ingresos</th><th>Costo</th><th>Ganancia</th></tr></thead>
+      <tbody id="rprov"></tbody>
+    </table></div></div>
+
+    <div class="h3">Desempeno mensual</div>
+    <div id="rgrafica" class="card" style="margin-bottom:22px"></div>
+
+    <div id="checklist-cierre" class="card" style="margin-bottom:22px"></div>
+
+    <div class="h3">Historial de ventas por mes</div>
+    <div class="sm mut" style="margin-bottom:10px">Cada mes puede descargarse (CSV) y luego cerrarse. Al cerrar un mes, sus ventas salen de los totales activos y su resumen queda guardado en el desempeno mensual.</div>
+    <div id="rmeses"></div>
+  </div>
+
+</div><!-- /main -->
+
+<div id="mbg">
+  <div id="mbox">
+    <div id="mhd"><span id="mtit"></span><button id="mclose" onclick="CM()">x</button></div>
+    <div id="mbody"></div>
+  </div>
+</div>
+<input type="file" id="frest" accept=".json" style="display:none"/>
+
+<script src="arcana.js"></script>
+<nav id="mobnav">
+  <button class="mnb on" onclick="reqAdmin('pos',this)" id="mbn-pos"><span class="ico">&#128722;</span>POS</button>
+  <button class="mnb" onclick="reqAdmin('apartados',this)" id="mbn-apa"><span class="ico">&#128274;</span>Apartados</button>
+  <button class="mnb" onclick="reqAdmin('etiq-pub',this)" id="mbn-etiq-pub"><span class="ico">&#127991;</span>Etiquetas</button>
+  <button class="mnb" onclick="reqAdmin('inventario',this)" id="mbn-inv"><span class="ico">&#128218;</span>Inventario</button>
+  <button class="mnb" onclick="reqAdmin('proveedores',this)" id="mbn-prov"><span class="ico">&#128100;</span>Proveedores</button>
+  <button class="mnb" onclick="reqAdmin('reportes',this)" id="mbn-rep"><span class="ico">&#128202;</span>Reportes</button>
+</nav>
+</div><!-- /appwrap -->
+</body>
+</html>
