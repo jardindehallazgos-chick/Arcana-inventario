@@ -1314,8 +1314,6 @@ function RChecklist(){
   h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
   h+=fila(false, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
 
-  h+='<div class="sm" style="margin-top:8px;color:#4ade80">El calculo del cierre ya no depende del inventario: la deuda por proveedor queda bien aunque limpies antes o despues de cerrar.</div>';
-
   // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
   h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("2. Respaldar ahora","respaldar()",!respaldoHoyOk)+'</div>';
