@@ -979,11 +979,11 @@ function limpiarCerosTodos(){
   var detalle=""; for(var nom in porProv) detalle+="\n  \u2022 "+nom+": "+porProv[nom]+" pieza(s)";
   var msg="Eliminar "+aEliminar.length+" pieza(s) vendidas (cantidad 0) de TODOS los proveedores?"+detalle;
   if(protegidas>0) msg+="\n\n"+protegidas+" pieza(s) en cero quedan protegidas por apartados activos y NO se eliminaran.";
-  msg+="\n\nAsegurate de haber descargado el CSV del mes antes de continuar.";
   if(!confirm(msg)) return;
   var ids={}; for(var i=0;i<aEliminar.length;i++) ids[aEliminar[i].id]=true;
   DB.items=DB.items.filter(function(it){ return !ids[it.id]; });
   dbSave(); RI(); RP();
+  var chk=ge("checklist-cierre"); if(chk) RChecklist();
   alert("Eliminadas "+aEliminar.length+" pieza(s) vendidas de "+Object.keys(porProv).length+" proveedor(es)."+(protegidas>0?"\n"+protegidas+" pieza(s) apartadas quedaron protegidas.":""));
 }
 
@@ -1291,6 +1291,11 @@ function RChecklist(){
     var icono=ok?'<span style="color:#4ade80">&#10004;</span>':'<span style="color:#f59e0b">&#9675;</span>';
     return '<div style="display:flex;gap:9px;padding:6px 0;border-bottom:1px solid #1e1c18"><div style="font-size:15px;width:18px;text-align:center">'+icono+'</div><div style="flex:1"><div style="font-size:13px;color:'+(ok?"#8a8578":"#f0ebe3")+'">'+texto+'</div>'+(detalle?'<div class="sm mut">'+detalle+'</div>':'')+'</div></div>';
   }
+  function boton(texto, onclick, activo, colorAlt){
+    var estilo = activo ? (colorAlt?('color:'+colorAlt+';border-color:'+colorAlt+'44'):'') : 'opacity:.4;pointer-events:none';
+    var clase = activo && !colorAlt ? "btna" : "btno";
+    return '<button class="'+clase+'" style="'+estilo+'" onclick="'+onclick+'">'+texto+'</button>';
+  }
 
   // Respaldo de HOY: la red de seguridad se verifica al INICIO, antes de tocar nada
   // irreversible (cerrar mes, limpiar inventario). Un respaldo de un dia anterior
@@ -1299,20 +1304,25 @@ function RChecklist(){
   try{ ultimoResp=localStorage.getItem("ultimoRespaldo"); }catch(e){}
   var respaldoHoyOk = ultimoResp===hoyStr.slice(0,10);
 
-  var h='<div class="h3" style="margin-bottom:4px">Lista de verificacion — cierre de '+nombreM+'</div>';
-  h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos en orden para cerrar el mes correctamente.</div>';
-  h+=fila(respaldoHoyOk, "1. Respalda ANTES de continuar", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo. Usa el boton de abajo.");
-  h+=fila(true, "2. Revisa y corrige las ventas del mes", "Cancela cualquier venta equivocada ANTES de cerrar.");
-  h+=fila(descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Pendiente: usa \"Descargar mes (CSV)\" en el historial de abajo.");
-  h+=fila(yaCerrado, "4. Cierra el mes", "Usa \"Cerrar\" en el historial de abajo. Requiere el CSV descargado. La deuda por proveedor queda calculada y fija en este paso.");
-  h+=fila(false, "5. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero. Usa el boton de abajo."):"Sin piezas en cero pendientes.");
-  h+=fila(false, "6. Genera los Anexos A por proveedor", "Opcional: en cada ficha de proveedor, si necesitas el papeleo de consignacion.");
+  var h='<div class="h3" style="margin-bottom:4px">Panel de cierre de mes — '+nombreM+'</div>';
+  h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
+
+  h+=fila(true, "1. Revisa y corrige las ventas del mes", "Cancela cualquier venta equivocada ANTES de continuar. Se hace desde el historial de abajo.");
+  h+=fila(respaldoHoyOk, "2. Respalda", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.");
+  h+=fila(descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Conserva el detalle completo de las ventas.");
+  h+=fila(false, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
+  h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
+  h+=fila(false, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
 
   h+='<div class="sm" style="margin-top:8px;color:#4ade80">El calculo del cierre ya no depende del inventario: la deuda por proveedor queda bien aunque limpies antes o despues de cerrar.</div>';
 
-  h+='<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
-  if(!respaldoHoyOk) h+='<button class="btna" onclick="respaldar()">Respaldar ahora</button>';
-  h+='<button class="btno" onclick="limpiarCerosTodos()" style="color:#f59e0b;border-color:#f59e0b44">Limpiar vendidos de todos los proveedores</button>';
+  // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
+  h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("2. Respaldar ahora","respaldar()",!respaldoHoyOk)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("3. Descargar CSV del mes",'descargarMes("'+ymCerrar+'")',!descargado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("5. Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("6. Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",yaCerrado,"#f59e0b")+'</div>';
   h+='</div>';
 
   el.innerHTML=h;
@@ -1406,6 +1416,7 @@ function descargarMes(ym){
   if(!window._mesesDescargados) window._mesesDescargados={};
   window._mesesDescargados[ym]=true;
   apaOkGlobal("Mes "+nombreMes(ym)+" descargado. Ahora puedes cerrarlo.");
+  RChecklist();
 }
 
 function apaOkGlobal(msg){
