@@ -793,6 +793,17 @@ function calcC(){
 }
 function cobrar(){
   if(!carrito.length) return;
+  // VALIDACION FINAL DE EXISTENCIA: confirmar que aun hay suficiente inventario real
+  // justo antes de registrar la venta. El carrito pudo haberse armado hace rato o en
+  // otro dispositivo, y la existencia pudo cambiar mientras tanto. Sin esta verificacion
+  // se podria vender mas piezas de las que realmente existen.
+  for(var i=0;i<carrito.length;i++){
+    var itChk=getItem(carrito[i].id);
+    if(!itChk || (itChk.cantidad||0)<carrito[i].cant){
+      alert("Ya no hay existencia suficiente de \""+(itChk?itChk.sku:carrito[i].id)+"\". Disponible: "+(itChk?(itChk.cantidad||0):0)+". Ajusta el carrito antes de cobrar.");
+      return;
+    }
+  }
   var lineas=[]; for(var i=0;i<carrito.length;i++){
     var itC=carrito[i].item||getItem(carrito[i].id);
     lineas.push({itemId:carrito[i].id,cantidad:carrito[i].cant,precio:carrito[i].precio,
@@ -2574,13 +2585,37 @@ function fechaLarga(iso){
   return { dia:String(parseInt(parts[2],10)), mes:meses[parseInt(parts[1],10)-1]||"", ano:parts[0] };
 }
 
+
+// Detecta que claves tuvieron alguna venta cancelada en el mes, con sus fechas.
+// Se usa para agregar una nota de transparencia en los reportes cuando una clave
+// aparece junto a una cancelacion relacionada, sin cambiar ningun calculo.
+function cancelacionesPorClaveMes(ym){
+  var mapa={}; // sku -> [fechas de cancelacion]
+  for(var i=0;i<DB.ventas.length;i++){
+    var v=DB.ventas[i];
+    if(!v.cancelacion) continue;
+    if((v.fecha||"").slice(0,7)!==ym) continue;
+    for(var j=0;j<v.lineas.length;j++){
+      var lin=v.lineas[j];
+      var it=getItem(lin.itemId);
+      var sku=it?it.sku:(lin.sku||lin.itemId);
+      if(!mapa[sku]) mapa[sku]=[];
+      mapa[sku].push(v.fecha);
+    }
+  }
+  return mapa;
+}
+
 function reporteGeneralVentas(){
   var ym = diaComercial().slice(0,7);
   var nombreM = nombreMes(ym);
+  var cancelMap = cancelacionesPorClaveMes(ym);
 
-  // Recolectar todas las ventas del mes (activas o archivadas), excluyendo canceladas
+  // Recolectar todas las ventas del mes (activas o archivadas), excluyendo canceladas.
+  // El precio de venta de cada linea se PRORRATEA con el descuento global de la venta
+  // (si lo hubo), igual que en cancelarVenta, para que el reporte refleje lo realmente cobrado.
   var lineasPorProv={}; // provId -> {nombre, tipo, lineas:[], totalCosto, totalVenta}
-  function agregarLinea(fecha, linea, mpago){
+  function agregarLinea(fecha, linea, precioEfectivo){
     if(linea.cancelada) return;
     var provId=linea.proveedorId;
     if(provId===undefined){ var itF=getItem(linea.itemId); provId=itF?itF.proveedorId:null; }
@@ -2592,17 +2627,31 @@ function reporteGeneralVentas(){
     var sku=it?it.sku:(linea.sku||linea.itemId);
     var desc=it?it.descripcion:(linea.descripcion||"");
     if(!lineasPorProv[provId]) lineasPorProv[provId]={nombre:pv.nombre,tipo:pv.tipo,lineas:[],totalCosto:0,totalVenta:0};
-    var venta=linea.precio*linea.cantidad;
     var costo=(costoU||0)*linea.cantidad;
-    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0,venta:linea.precio});
+    var tieneCancelRel = cancelMap[sku] && cancelMap[sku].length>0;
+    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0,venta:precioEfectivo,cancelRel:tieneCancelRel,cancelFechas:tieneCancelRel?cancelMap[sku]:null});
     lineasPorProv[provId].totalCosto+=costo;
-    lineasPorProv[provId].totalVenta+=venta;
+    lineasPorProv[provId].totalVenta+=precioEfectivo*linea.cantidad;
   }
   for(var i=0;i<DB.ventas.length;i++){
     var v=DB.ventas[i];
     if((v.fecha||"").slice(0,7)!==ym) continue;
     if(v.cancelacion) continue;
-    for(var j=0;j<v.lineas.length;j++) agregarLinea(v.fecha, v.lineas[j], v.mpago);
+    // Prorratear el descuento global de la venta entre sus lineas, segun peso en el subtotal
+    var subtotalVenta=0;
+    for(var k=0;k<v.lineas.length;k++) subtotalVenta+=v.lineas[k].precio*v.lineas[k].cantidad;
+    var descuentoVenta=v.descuento||0;
+    for(var j=0;j<v.lineas.length;j++){
+      var lin=v.lineas[j];
+      var precioEfectivo=lin.precio;
+      if(descuentoVenta>0 && subtotalVenta>0){
+        var subtotalLinea=lin.precio*lin.cantidad;
+        var proporcion=subtotalLinea/subtotalVenta;
+        var descuentoLinea=descuentoVenta*proporcion;
+        precioEfectivo=Math.max(0,(subtotalLinea-descuentoLinea)/lin.cantidad);
+      }
+      agregarLinea(v.fecha, lin, precioEfectivo);
+    }
   }
 
   var provsConsig=[], provsDirecta=[];
@@ -2622,7 +2671,7 @@ function reporteGeneralVentas(){
   css+='.totales{margin-top:10px;font-size:11pt;font-weight:700;color:#4a3620;text-align:right}@media print{body{margin:0}}';
 
   var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
-  doc+='<h1>Reporte General de Ventas<\/h1><div class="sub">'+esc(nombreM)+' &middot; Ventas canceladas excluidas &middot; Jardín de Hallazgos<\/div>';
+  doc+='<h1>Reporte General de Ventas<\/h1><div class="sub">'+esc(nombreM)+' &middot; Ventas canceladas excluidas &middot; montos con descuentos ya aplicados &middot; Jardín de Hallazgos<\/div>';
 
   function renderSeccion(titulo, provs){
     doc+='<h2 class="seccion">'+esc(titulo)+'<\/h2>';
@@ -2635,6 +2684,9 @@ function reporteGeneralVentas(){
       for(var j=0;j<d.lineas.length;j++){
         var l=d.lineas[j];
         doc+='<tr><td>'+l.fecha+'<\/td><td>'+esc(l.sku)+'<\/td><td>'+esc((l.desc||"").slice(0,36))+'<\/td><td>'+l.cant+'<\/td><td>'+fmt(l.costo)+'<\/td><td>'+fmt(l.venta)+'<\/td><\/tr>';
+        if(l.cancelRel){
+          doc+='<tr><td colspan="6" style="font-size:7.3pt;color:#b45309;background:#fdf3ef;padding:2px 6px;border:1px solid #ece5d6">Nota: '+esc(l.sku)+' tuvo una venta cancelada el '+l.cancelFechas.join(", ")+'; esa cancelación no está incluida en este total.<\/td><\/tr>';
+        }
       }
       doc+='<\/table>';
       doc+='<div class="tot-prov">Subtotal '+esc(d.nombre)+' — Costo: '+fmt(d.totalCosto)+' &middot; Venta: '+fmt(d.totalVenta)+'<\/div><\/div>';
@@ -2658,6 +2710,7 @@ function reporteGeneralVentas(){
 function reporteConsignatarios(){
   var ym = diaComercial().slice(0,7);
   var nombreM = nombreMes(ym);
+  var cancelMap = cancelacionesPorClaveMes(ym);
 
   var lineasPorProv={};
   function agregarLinea(fecha, linea){
@@ -2674,7 +2727,8 @@ function reporteConsignatarios(){
     var desc=it?it.descripcion:(linea.descripcion||"");
     if(!lineasPorProv[provId]) lineasPorProv[provId]={nombre:pv.nombre,lineas:[],total:0};
     var costo=(costoU||0)*linea.cantidad;
-    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0});
+    var tieneCancelRel = cancelMap[sku] && cancelMap[sku].length>0;
+    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0,cancelRel:tieneCancelRel,cancelFechas:tieneCancelRel?cancelMap[sku]:null});
     lineasPorProv[provId].total+=costo;
   }
   for(var i=0;i<DB.ventas.length;i++){
@@ -2707,6 +2761,9 @@ function reporteConsignatarios(){
     for(var j=0;j<d.lineas.length;j++){
       var l=d.lineas[j];
       doc+='<tr><td>'+l.fecha+'<\/td><td>'+esc(l.sku)+'<\/td><td>'+esc((l.desc||"").slice(0,40))+'<\/td><td>'+l.cant+'<\/td><td>'+fmt(l.costo)+'<\/td><\/tr>';
+      if(l.cancelRel){
+        doc+='<tr><td colspan="5" style="font-size:8pt;color:#b45309;background:#fdf3ef;padding:3px 8px;border:1px solid #ece5d6">Nota: '+esc(l.sku)+' tuvo una venta cancelada el '+l.cancelFechas.join(", ")+'; esa cancelación no está incluida en este total.<\/td><\/tr>';
+      }
     }
     doc+='<\/table><div class="totales">Total a pagar: '+fmt(d.total)+'<\/div><\/div>';
   }
