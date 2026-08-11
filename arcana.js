@@ -817,9 +817,11 @@ function cobrar(){
   var descMonto;
   if(descTipo2==="pct"){ if(descVal2>100) descVal2=100; descMonto=sub2*(descVal2/100); }
   else { if(descVal2>sub2) descVal2=sub2; descMonto=descVal2; }
-  RV(lineas,mpago,descMonto); carrito=[];
+  var notaVenta=((ge("cnota")||{}).value||"").trim().slice(0,50);
+  RV(lineas,mpago,descMonto,notaVenta); carrito=[];
   if(ge("cdesc")) ge("cdesc").value="0";
   if(ge("cdesc-tipo")) ge("cdesc-tipo").value="monto";
+  if(ge("cnota")) ge("cnota").value="";
   RC(); PH();
   var s=ge("pok"); s.style.display="block"; setTimeout(function(){ s.style.display="none"; },2500);
 }
@@ -851,6 +853,9 @@ function PH(){
       detalle+='<span style="color:'+(l.cancelada?"#6b6358":"#4ade80")+';margin-left:4px">'+fmt(l.precio*l.cantidad)+'</span>';
       detalle+=cancelBtn+'</div>';
     }
+    if(v.notas && v.notas.trim() && !v.cancelacion){
+      detalle+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8"><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</div>';
+    }
     h+='<tr style="background:'+rowBg+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td>';
     h+='<td><span style="color:'+(pagoColor[mp]||"#a09480")+';font-size:12px">'+(pagoLabel[mp]||mp)+'</span></td>';
     h+='<td style="white-space:nowrap">'+totalDisplay+'</td><td>'+detalle+'</td></tr>';
@@ -859,10 +864,10 @@ function PH(){
   RCorte();
   revisarAlertaApa();
 }
-function RV(lineas,mpago,descuento){
+function RV(lineas,mpago,descuento,notas){
   var total=0; for(var i=0;i<lineas.length;i++) total+=lineas[i].precio*lineas[i].cantidad;
   total=Math.max(0,total-(descuento||0));
-  DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0});
+  DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0,notas:notas||""});
   for(var i=0;i<DB.items.length;i++) for(var j=0;j<lineas.length;j++) if(DB.items[i].id===lineas[j].itemId) DB.items[i].cantidad=Math.max(0,(DB.items[i].cantidad||0)-lineas[j].cantidad);
   dbSave();
 }
@@ -901,8 +906,9 @@ function cancelarVenta(vid,lidx){
 
 // ── PROVEEDORES ────────────────────────────────────────────────────────────────
 function RP(){
-  var h=""; for(var i=0;i<DB.provs.length;i++){
-    var p=DB.provs[i],enT=0,ingr=0,cost=0;
+  var provsOrdenados=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
+  var h=""; for(var i=0;i<provsOrdenados.length;i++){
+    var p=provsOrdenados[i],enT=0,ingr=0,cost=0;
     for(var j=0;j<DB.items.length;j++) if(DB.items[j].proveedorId===p.id) enT+=DB.items[j].cantidad||0;
     for(var j=0;j<DB.ventas.length;j++){
       var vpj=DB.ventas[j];
@@ -1386,6 +1392,9 @@ function RMeses(){
       var det2=""; for(var k=0;k<v.lineas.length;k++){var lk=v.lineas[k],itk=getItem(lk.itemId);
         var cancelBtn2=lk.cancelada?'<span style="color:#f87171;font-size:10px;margin-left:6px">CANCELADA</span>':((v.cancelacion||!esMesActual)?'':'<button onclick="cancelarVenta(\''+v.id+'\','+k+')" style="background:none;border:1px solid #f8717144;border-radius:4px;color:#f87171;font-size:10px;padding:1px 6px;cursor:pointer;margin-left:6px">Cancelar</button>');
         det2+='<div style="font-size:11px;line-height:1.5;display:flex;align-items:center;flex-wrap:wrap"><span class="mono" style="color:'+(lk.cancelada?"#6b6358":"#c9a96e")+';text-decoration:'+(lk.cancelada?"line-through":"none")+';margin-right:6px">'+esc(itk?itk.sku:"?")+'</span><span class="mut">'+esc(itk?itk.descripcion:"eliminada")+'</span><span style="color:#4ade80;margin-left:4px">'+fmt(lk.precio*lk.cantidad)+'</span>'+cancelBtn2+'</div>';}
+      if(v.notas && v.notas.trim() && !v.cancelacion){
+        det2+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8"><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</div>';
+      }
       h+='<tr style="background:'+rowBg2+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td><td><span style="color:'+(pagoColor[mp2]||"#a09480")+';font-size:12px">'+(pagoLabel[mp2]||mp2)+'</span></td><td style="white-space:nowrap">'+totalDisp2+'</td><td>'+det2+'</td></tr>';
     }
     h+='</tbody></table></div></div></div>';
