@@ -853,8 +853,12 @@ function PH(){
       detalle+='<span style="color:'+(l.cancelada?"#6b6358":"#4ade80")+';margin-left:4px">'+fmt(l.precio*l.cantidad)+'</span>';
       detalle+=cancelBtn+'</div>';
     }
-    if(v.notas && v.notas.trim() && !v.cancelacion){
-      detalle+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8"><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</div>';
+    if(!v.cancelacion){
+      if(v.notas && v.notas.trim()){
+        detalle+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8;display:flex;align-items:center;justify-content:space-between;gap:6px"><span><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</span><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;white-space:nowrap;font-size:10px">Editar</span></div>';
+      } else {
+        detalle+='<div style="margin-top:4px"><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;font-size:10px">+ Agregar nota</span></div>';
+      }
     }
     h+='<tr style="background:'+rowBg+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td>';
     h+='<td><span style="color:'+(pagoColor[mp]||"#a09480")+';font-size:12px">'+(pagoLabel[mp]||mp)+'</span></td>';
@@ -870,6 +874,27 @@ function RV(lineas,mpago,descuento,notas){
   DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0,notas:notas||""});
   for(var i=0;i<DB.items.length;i++) for(var j=0;j<lineas.length;j++) if(DB.items[i].id===lineas[j].itemId) DB.items[i].cantidad=Math.max(0,(DB.items[i].cantidad||0)-lineas[j].cantidad);
   dbSave();
+}
+// Permite agregar o editar la nota de CUALQUIER venta ya registrada, tenga o no
+// nota previa, desde Ventas de hoy o desde el historial de Reportes.
+function editarNotaVenta(vid){
+  var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
+  if(!v) return;
+  var h='<div class="fld"><label class="lbl">Nota de la venta (maximo 50 caracteres)</label>';
+  h+='<input type="text" class="inp" id="edn-txt" maxlength="50" value="'+esc(v.notas||"")+'" placeholder="Ej. cliente frecuente, pago en 2 partes..."/></div>';
+  h+='<div style="display:flex;justify-content:space-between;padding-top:8px">';
+  h+='<button class="btn" onclick="CM()">Cancelar</button>';
+  h+='<button class="btna" onclick="guardarNotaVenta(\''+vid+'\')">Guardar nota</button>';
+  h+='</div>';
+  OM("Editar nota de venta", h);
+}
+function guardarNotaVenta(vid){
+  var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
+  if(!v) return;
+  var txt=((ge("edn-txt")||{}).value||"").trim().slice(0,50);
+  v.notas=txt;
+  dbSave(); CM(); PH();
+  var tr=ge("tab-reportes"); if(tr&&tr.classList.contains("on")) RMeses();
 }
 function cancelarVenta(vid,lidx){
   var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
@@ -1392,8 +1417,12 @@ function RMeses(){
       var det2=""; for(var k=0;k<v.lineas.length;k++){var lk=v.lineas[k],itk=getItem(lk.itemId);
         var cancelBtn2=lk.cancelada?'<span style="color:#f87171;font-size:10px;margin-left:6px">CANCELADA</span>':((v.cancelacion||!esMesActual)?'':'<button onclick="cancelarVenta(\''+v.id+'\','+k+')" style="background:none;border:1px solid #f8717144;border-radius:4px;color:#f87171;font-size:10px;padding:1px 6px;cursor:pointer;margin-left:6px">Cancelar</button>');
         det2+='<div style="font-size:11px;line-height:1.5;display:flex;align-items:center;flex-wrap:wrap"><span class="mono" style="color:'+(lk.cancelada?"#6b6358":"#c9a96e")+';text-decoration:'+(lk.cancelada?"line-through":"none")+';margin-right:6px">'+esc(itk?itk.sku:"?")+'</span><span class="mut">'+esc(itk?itk.descripcion:"eliminada")+'</span><span style="color:#4ade80;margin-left:4px">'+fmt(lk.precio*lk.cantidad)+'</span>'+cancelBtn2+'</div>';}
-      if(v.notas && v.notas.trim() && !v.cancelacion){
-        det2+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8"><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</div>';
+      if(!v.cancelacion){
+        if(v.notas && v.notas.trim()){
+          det2+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8;display:flex;align-items:center;justify-content:space-between;gap:6px"><span><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</span><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;white-space:nowrap;font-size:10px">Editar</span></div>';
+        } else {
+          det2+='<div style="margin-top:4px"><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;font-size:10px">+ Agregar nota</span></div>';
+        }
       }
       h+='<tr style="background:'+rowBg2+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td><td><span style="color:'+(pagoColor[mp2]||"#a09480")+';font-size:12px">'+(pagoLabel[mp2]||mp2)+'</span></td><td style="white-space:nowrap">'+totalDisp2+'</td><td>'+det2+'</td></tr>';
     }
