@@ -247,7 +247,7 @@ function dbLoad(){
     });
 }
 
-var CATS = ["Vestido","Blusa","Pantalon","Falda","Saco/Blazer","Abrigo","Sueter","Chaleco","Traje","Lenceria","Zapatos","Bolso/Cartera","Accesorio","Joyeria","Objeto decorativo","Bebida","Alimentos","Chamarra","Mascada","Arete","Collar","Anillo","Prendedor","Sombrero","Short","Cinturon","Corbata","Otro"];
+var CATS = ["Vestido","Blusa","Camisa","Pantalon","Falda","Saco/Blazer","Abrigo","Sueter","Chaleco","Traje","Lenceria","Zapatos","Bolso/Cartera","Accesorio","Joyeria","Objeto decorativo","Bebida","Alimentos","Chamarra","Mascada","Arete","Collar","Anillo","Prendedor","Sombrero","Short","Cinturon","Corbata","Otro"];
 var EPOCAS = ["1900s","1910s","1920s","1930s","1940s","1950s","1960s","1970s","1980s","1990s","2000s","2010s","2020s","Actual","Sin epoca definida"];
 var TALLAS = ["Xch","Ch","Ch/M","M","M/G","G","XG"];
 var ADMIN_PASS_DEFAULT = "arcana2024";
@@ -1471,7 +1471,7 @@ function compararClaveNatural(skuA,skuB){
 }
 
 function respaldoInventarioProveedores(){
-  if(typeof XLSX==="undefined"){ alert("No se pudo cargar la libreria de Excel. Verifica tu conexion a internet e intenta de nuevo."); return; }
+  if(typeof ExcelJS==="undefined"){ alert("No se pudo cargar la libreria de Excel. Verifica tu conexion a internet e intenta de nuevo."); return; }
   var porProv={}; // provId -> [items]
   for(var i=0;i<DB.items.length;i++){
     var it=DB.items[i];
@@ -1488,66 +1488,71 @@ function respaldoInventarioProveedores(){
     .filter(function(x){ return x.prov; })
     .sort(function(a,b){ return (a.prov.nombre||"").localeCompare(b.prov.nombre||"",'es',{sensitivity:'base'}); });
 
-  var wb=XLSX.utils.book_new();
+  var wb=new ExcelJS.Workbook();
   var encabezados=["CLAVE","CANT","INGRESO","DESCRIPCION","COSTO","PRECIO VENTA","CATEGORIA","EPOCA","TALLA","NOTAS","TAX","TOTAL","COMISION"];
+  var anchos=[10,6,10,38,8,11,14,10,8,20,8,9,10];
 
-  // Colores de relleno por columna (imitando el Excel de referencia: bloques de color por grupo de columnas)
+  // Colores de relleno por columna (imitando el Excel de referencia: bloques de color por grupo de columnas).
+  // ExcelJS usa ARGB de 8 caracteres (alpha + rgb), sin el prefijo "#".
   var coloresCol=["FFD9E8FC","FFD9E8FC","FFD9E8FC","FFFFFFFF","FFFFE699","FFFFE699","FFD9D2E9","FFD9D2E9","FFD9D2E9","FFFFFFFF","FFC6E0B4","FFC6E0B4","FFC6E0B4"];
 
+  var nombresUsados={};
   for(var p=0;p<provsOrd.length;p++){
     var pid=provsOrd[p].id, prov=provsOrd[p].prov;
     var items=porProv[pid].slice().sort(function(a,b){ return compararClaveNatural(a.sku,b.sku); });
-    // Las columnas TAX, TOTAL y COMISION se dejan vacias aqui: se llenan como FORMULAS
-    // reales de Excel abajo, para que se recalculen solas si Laura edita Costo o Precio.
-    var filas=[encabezados];
-    for(var i=0;i<items.length;i++){
-      var it=items[i];
-      filas.push([
-        it.sku||"", it.cantidad||0, mesAnioAbrev(it.fechaIngreso), it.descripcion||"",
-        Math.round((it.costoProveedor||0)*100)/100, Math.round((it.precioVenta||0)*100)/100,
-        it.categoria||"", it.epoca||"", it.talla||"", it.notas||"",
-        "", "", ""
-      ]);
+
+    // Nombre de hoja: nombre del proveedor, limitado a 31 caracteres (limite de Excel) y sin caracteres invalidos
+    var nombreHoja=(prov.nombre||"Proveedor").replace(/[\\\/\?\*\[\]:]/g,"").slice(0,31);
+    var nombreFinal=nombreHoja, dup=1;
+    while(nombresUsados[nombreFinal]){ dup++; nombreFinal=(nombreHoja.slice(0,28)+"_"+dup); }
+    nombresUsados[nombreFinal]=true;
+
+    var ws=wb.addWorksheet(nombreFinal);
+    ws.columns=encabezados.map(function(h,idx){ return {header:h, key:"c"+idx, width:anchos[idx]}; });
+
+    // Fila de encabezado: color de relleno por columna + negrita + centrado
+    var filaEnc=ws.getRow(1);
+    for(var c=0;c<encabezados.length;c++){
+      var cell=filaEnc.getCell(c+1);
+      cell.fill={type:"pattern", pattern:"solid", fgColor:{argb:coloresCol[c]}};
+      cell.font={bold:true};
+      cell.alignment={horizontal:"center"};
     }
-    var ws=XLSX.utils.aoa_to_sheet(filas);
-    // Escribir formulas EN VIVO para TAX (col K), TOTAL (col L) y COMISION (col M).
-    // Formula fiscal identica a la que usa Arcana internamente (tarjeta como referencia):
+
+    // Filas de datos + formulas EN VIVO para TAX, TOTAL y COMISION (col K, L, M),
+    // identicas a la formula fiscal que usa Arcana internamente (tarjeta como referencia):
     // Tax = Precio - (Precio/1.16) + Precio*0.015 + Precio*0.0406
     // Total = Precio - Tax
     // Comision = Total - Costo
     for(var i=0;i<items.length;i++){
-      var fila=i+2; // fila 1 es encabezado
-      ws["K"+fila]={t:"n", f:"ROUND(F"+fila+"-(F"+fila+"/1.16)+F"+fila+"*0.015+F"+fila+"*0.0406,0)"};
-      ws["L"+fila]={t:"n", f:"ROUND(F"+fila+"-K"+fila+",0)"};
-      ws["M"+fila]={t:"n", f:"ROUND(L"+fila+"-E"+fila+",0)"};
+      var it=items[i], filaN=i+2;
+      var costo=Math.round((it.costoProveedor||0)*100)/100;
+      var precio=Math.round((it.precioVenta||0)*100)/100;
+      ws.addRow([
+        it.sku||"", it.cantidad||0, mesAnioAbrev(it.fechaIngreso), it.descripcion||"",
+        costo, precio, it.categoria||"", it.epoca||"", it.talla||"", it.notas||"",
+        {formula:"ROUND(F"+filaN+"-(F"+filaN+"/1.16)+F"+filaN+"*0.015+F"+filaN+"*0.0406,0)"},
+        {formula:"ROUND(F"+filaN+"-K"+filaN+",0)"},
+        {formula:"ROUND(L"+filaN+"-E"+filaN+",0)"}
+      ]);
     }
-    // Aplicar color de relleno a la fila de encabezado, columna por columna
-    for(var c=0;c<encabezados.length;c++){
-      var cellRef=XLSX.utils.encode_cell({r:0,c:c});
-      if(!ws[cellRef]) continue;
-      ws[cellRef].s={
-        fill:{patternType:"solid", fgColor:{rgb:coloresCol[c]}},
-        font:{bold:true},
-        alignment:{horizontal:"center"}
-      };
-    }
-    ws['!cols']=[{wch:10},{wch:6},{wch:10},{wch:38},{wch:8},{wch:11},{wch:14},{wch:10},{wch:8},{wch:20},{wch:8},{wch:9},{wch:10}];
+
     // Congelar la primera fila (encabezados) para que se mantenga visible al desplazarse.
-    ws['!freeze']={xSplit:0, ySplit:1, topLeftCell:"A2", activePane:"bottomLeft", state:"frozen"};
-    ws['!sheetViews']=[{pane:{ySplit:1, topLeftCell:"A2", activePane:"bottomLeft", state:"frozen"}}];
-    // Nombre de hoja: nombre del proveedor, limitado a 31 caracteres (limite de Excel) y sin caracteres invalidos
-    var nombreHoja=(prov.nombre||"Proveedor").replace(/[\\\/\?\*\[\]:]/g,"").slice(0,31);
-    // Evitar nombres de hoja duplicados
-    var nombreFinal=nombreHoja, dup=1;
-    while(wb.SheetNames.indexOf(nombreFinal)!==-1){ dup++; nombreFinal=(nombreHoja.slice(0,28)+"_"+dup); }
-    XLSX.utils.book_append_sheet(wb, ws, nombreFinal);
+    ws.views=[{state:"frozen", ySplit:1}];
   }
 
   var f2=hoy();
   var partesF=f2.split("-"); // [YYYY, MM, DD]
   var nombreArchivo="a-invent-"+partesF[0]+"-"+MESES_ES[parseInt(partesF[1],10)-1]+"-"+parseInt(partesF[2],10)+".xlsx";
-  XLSX.writeFile(wb, nombreArchivo);
-  apaOkGlobal("Respaldo de inventario por proveedor descargado ("+provsOrd.length+" proveedores).");
+
+  wb.xlsx.writeBuffer().then(function(buffer){
+    var blob=new Blob([buffer],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    var url=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=url; a.download=nombreArchivo; a.click(); URL.revokeObjectURL(url);
+    apaOkGlobal("Respaldo de inventario por proveedor descargado ("+provsOrd.length+" proveedores).");
+  }).catch(function(err){
+    alert("No se pudo generar el archivo de Excel. Intenta de nuevo.");
+  });
 }
 
 function descargarMes(ym){
