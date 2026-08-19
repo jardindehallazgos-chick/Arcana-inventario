@@ -247,8 +247,8 @@ function dbLoad(){
     });
 }
 
-var CATS = ["Vestido","Blusa","Pantalon","Falda","Saco/Blazer","Abrigo","Sueter","Chaleco","Traje","Lenceria","Zapatos","Bolso/Cartera","Accesorio","Joyeria","Objeto decorativo","Bebida","Alimentos","Otro"];
-var EPOCAS = ["1900s","1910s","1920s","1930s","1940s","1950s","1960s","1970s","1980s","1990s","2000s","2010s","2020s","Sin epoca definida"];
+var CATS = ["Vestido","Blusa","Pantalon","Falda","Saco/Blazer","Abrigo","Sueter","Chaleco","Traje","Lenceria","Zapatos","Bolso/Cartera","Accesorio","Joyeria","Objeto decorativo","Bebida","Alimentos","Chamarra","Mascada","Arete","Collar","Anillo","Prendedor","Sombrero","Short","Cinturon","Corbata","Otro"];
+var EPOCAS = ["1900s","1910s","1920s","1930s","1940s","1950s","1960s","1970s","1980s","1990s","2000s","2010s","2020s","Actual","Sin epoca definida"];
 var TALLAS = ["Xch","Ch","Ch/M","M","M/G","G","XG"];
 var ADMIN_PASS_DEFAULT = "arcana2024";
 var ACCESS_PASS_DEFAULT = "JDH1";
@@ -1436,6 +1436,118 @@ function toggleMes(ym){
   if(!body) return;
   if(body.style.display==="none"){ body.style.display="block"; if(arrow) arrow.innerHTML="&#9660;"; }
   else { body.style.display="none"; if(arrow) arrow.innerHTML="&#9654;"; }
+}
+
+// Respaldo del inventario DISPONIBLE (piezas no vendidas), en Excel real (.xlsx)
+// con una pestaña por proveedor, imitando el formato de trabajo de Laura.
+// Convierte una fecha "YYYY-MM-DD" a formato abreviado "mes-aa" (ej. "may-26"),
+// igual al formato que usa Laura en su plantilla personal de Excel.
+var MESES_ABREV=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+function mesAnioAbrev(fechaIso){
+  if(!fechaIso) return "";
+  var p=String(fechaIso).split("-");
+  if(p.length<2) return fechaIso; // formato inesperado: devolver tal cual
+  var mIdx=parseInt(p[1],10)-1;
+  if(isNaN(mIdx)||mIdx<0||mIdx>11) return fechaIso;
+  var aa=p[0].slice(-2);
+  return MESES_ABREV[mIdx]+"-"+aa;
+}
+
+// Compara dos claves tipo "AV2936" separando letras y numero, para que el orden
+// respete el valor numerico real (AV88 antes de AV310 antes de AV2936), no el
+// orden alfabetico de texto (que pondria AV310 antes de AV88 por error).
+function compararClaveNatural(skuA,skuB){
+  var a=String(skuA||""), b=String(skuB||"");
+  var ma=a.match(/^([^\d]*)(\d+)?(.*)$/), mb=b.match(/^([^\d]*)(\d+)?(.*)$/);
+  var prefA=ma?ma[1]:a, prefB=mb?mb[1]:b;
+  var cmpPref=prefA.localeCompare(prefB,'es',{sensitivity:'base'});
+  if(cmpPref!==0) return cmpPref;
+  var numA=ma&&ma[2]?parseInt(ma[2],10):null, numB=mb&&mb[2]?parseInt(mb[2],10):null;
+  if(numA!==null&&numB!==null&&numA!==numB) return numA-numB;
+  if(numA!==null&&numB===null) return -1;
+  if(numA===null&&numB!==null) return 1;
+  var restA=ma?ma[3]:"", restB=mb?mb[3]:"";
+  return restA.localeCompare(restB,'es',{sensitivity:'base'});
+}
+
+function respaldoInventarioProveedores(){
+  if(typeof XLSX==="undefined"){ alert("No se pudo cargar la libreria de Excel. Verifica tu conexion a internet e intenta de nuevo."); return; }
+  var porProv={}; // provId -> [items]
+  for(var i=0;i<DB.items.length;i++){
+    var it=DB.items[i];
+    if((it.cantidad||0)<=0) continue; // solo piezas disponibles (no vendidas)
+    var pid=it.proveedorId; if(!pid) continue;
+    if(!porProv[pid]) porProv[pid]=[];
+    porProv[pid].push(it);
+  }
+  var provIds=Object.keys(porProv);
+  if(!provIds.length){ alert("No hay piezas disponibles en inventario para respaldar."); return; }
+
+  // Ordenar proveedores alfabeticamente, igual que en la pestaña Proveedores
+  var provsOrd=provIds.map(function(pid){ return {id:pid, prov:getProv(pid)}; })
+    .filter(function(x){ return x.prov; })
+    .sort(function(a,b){ return (a.prov.nombre||"").localeCompare(b.prov.nombre||"",'es',{sensitivity:'base'}); });
+
+  var wb=XLSX.utils.book_new();
+  var encabezados=["CLAVE","CANT","INGRESO","DESCRIPCION","COSTO","PRECIO VENTA","CATEGORIA","EPOCA","TALLA","NOTAS","TAX","TOTAL","COMISION"];
+
+  // Colores de relleno por columna (imitando el Excel de referencia: bloques de color por grupo de columnas)
+  var coloresCol=["FFD9E8FC","FFD9E8FC","FFD9E8FC","FFFFFFFF","FFFFE699","FFFFE699","FFD9D2E9","FFD9D2E9","FFD9D2E9","FFFFFFFF","FFC6E0B4","FFC6E0B4","FFC6E0B4"];
+
+  for(var p=0;p<provsOrd.length;p++){
+    var pid=provsOrd[p].id, prov=provsOrd[p].prov;
+    var items=porProv[pid].slice().sort(function(a,b){ return compararClaveNatural(a.sku,b.sku); });
+    // Las columnas TAX, TOTAL y COMISION se dejan vacias aqui: se llenan como FORMULAS
+    // reales de Excel abajo, para que se recalculen solas si Laura edita Costo o Precio.
+    var filas=[encabezados];
+    for(var i=0;i<items.length;i++){
+      var it=items[i];
+      filas.push([
+        it.sku||"", it.cantidad||0, mesAnioAbrev(it.fechaIngreso), it.descripcion||"",
+        Math.round((it.costoProveedor||0)*100)/100, Math.round((it.precioVenta||0)*100)/100,
+        it.categoria||"", it.epoca||"", it.talla||"", it.notas||"",
+        "", "", ""
+      ]);
+    }
+    var ws=XLSX.utils.aoa_to_sheet(filas);
+    // Escribir formulas EN VIVO para TAX (col K), TOTAL (col L) y COMISION (col M).
+    // Formula fiscal identica a la que usa Arcana internamente (tarjeta como referencia):
+    // Tax = Precio - (Precio/1.16) + Precio*0.015 + Precio*0.0406
+    // Total = Precio - Tax
+    // Comision = Total - Costo
+    for(var i=0;i<items.length;i++){
+      var fila=i+2; // fila 1 es encabezado
+      ws["K"+fila]={t:"n", f:"ROUND(F"+fila+"-(F"+fila+"/1.16)+F"+fila+"*0.015+F"+fila+"*0.0406,0)"};
+      ws["L"+fila]={t:"n", f:"ROUND(F"+fila+"-K"+fila+",0)"};
+      ws["M"+fila]={t:"n", f:"ROUND(L"+fila+"-E"+fila+",0)"};
+    }
+    // Aplicar color de relleno a la fila de encabezado, columna por columna
+    for(var c=0;c<encabezados.length;c++){
+      var cellRef=XLSX.utils.encode_cell({r:0,c:c});
+      if(!ws[cellRef]) continue;
+      ws[cellRef].s={
+        fill:{patternType:"solid", fgColor:{rgb:coloresCol[c]}},
+        font:{bold:true},
+        alignment:{horizontal:"center"}
+      };
+    }
+    ws['!cols']=[{wch:10},{wch:6},{wch:10},{wch:38},{wch:8},{wch:11},{wch:14},{wch:10},{wch:8},{wch:20},{wch:8},{wch:9},{wch:10}];
+    // Congelar la primera fila (encabezados) para que se mantenga visible al desplazarse.
+    ws['!freeze']={xSplit:0, ySplit:1, topLeftCell:"A2", activePane:"bottomLeft", state:"frozen"};
+    ws['!sheetViews']=[{pane:{ySplit:1, topLeftCell:"A2", activePane:"bottomLeft", state:"frozen"}}];
+    // Nombre de hoja: nombre del proveedor, limitado a 31 caracteres (limite de Excel) y sin caracteres invalidos
+    var nombreHoja=(prov.nombre||"Proveedor").replace(/[\\\/\?\*\[\]:]/g,"").slice(0,31);
+    // Evitar nombres de hoja duplicados
+    var nombreFinal=nombreHoja, dup=1;
+    while(wb.SheetNames.indexOf(nombreFinal)!==-1){ dup++; nombreFinal=(nombreHoja.slice(0,28)+"_"+dup); }
+    XLSX.utils.book_append_sheet(wb, ws, nombreFinal);
+  }
+
+  var f2=hoy();
+  var partesF=f2.split("-"); // [YYYY, MM, DD]
+  var nombreArchivo="a-invent-"+partesF[0]+"-"+MESES_ES[parseInt(partesF[1],10)-1]+"-"+parseInt(partesF[2],10)+".xlsx";
+  XLSX.writeFile(wb, nombreArchivo);
+  apaOkGlobal("Respaldo de inventario por proveedor descargado ("+provsOrd.length+" proveedores).");
 }
 
 function descargarMes(ym){
