@@ -529,14 +529,16 @@ function initF(){
     for(var i=0;i<TALLAS.length;i++) ht+='<option value="'+esc(TALLAS[i])+'"'+(vtl===TALLAS[i]?" selected":"")+'>'+esc(TALLAS[i])+'</option>';
     ftl.innerHTML=ht;
   }
+  var catsOrd=CATS.slice().sort(function(a,b){ return a.localeCompare(b,'es',{sensitivity:'base'}); });
   var h='<option value="">Todas las categorias</option>';
-  for(var i=0;i<CATS.length;i++) h+='<option value="'+esc(CATS[i])+'"'+(vc===CATS[i]?" selected":"")+'>'+esc(CATS[i])+'</option>';
+  for(var i=0;i<catsOrd.length;i++) h+='<option value="'+esc(catsOrd[i])+'"'+(vc===catsOrd[i]?" selected":"")+'>'+esc(catsOrd[i])+'</option>';
   fc.innerHTML=h;
   h='<option value="">Todas las epocas</option>';
   for(var i=0;i<EPOCAS.length;i++) h+='<option value="'+esc(EPOCAS[i])+'"'+(ve===EPOCAS[i]?" selected":"")+'>'+esc(EPOCAS[i])+'</option>';
   fe.innerHTML=h;
+  var provsOrdF=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
   h='<option value="">Todos los proveedores</option>';
-  for(var i=0;i<DB.provs.length;i++) h+='<option value="'+DB.provs[i].id+'"'+(vp===DB.provs[i].id?" selected":"")+'>'+esc(DB.provs[i].nombre)+'</option>';
+  for(var i=0;i<provsOrdF.length;i++) h+='<option value="'+provsOrdF[i].id+'"'+(vp===provsOrdF[i].id?" selected":"")+'>'+esc(provsOrdF[i].nombre)+'</option>';
   fp.innerHTML=h;
 }
 
@@ -666,9 +668,11 @@ function delSel(){
 
 function aItem(id){
   var it=id?getItem(id):null;
-  var co='<option value="">-</option>'; for(var i=0;i<CATS.length;i++) co+='<option'+(it&&it.categoria===CATS[i]?" selected":"")+'>'+esc(CATS[i])+'</option>';
+  var catsOrdF=CATS.slice().sort(function(a,b){ return a.localeCompare(b,'es',{sensitivity:'base'}); });
+  var co='<option value="">-</option>'; for(var i=0;i<catsOrdF.length;i++) co+='<option'+(it&&it.categoria===catsOrdF[i]?" selected":"")+'>'+esc(catsOrdF[i])+'</option>';
   var eo='<option value="">-</option>'; for(var i=0;i<EPOCAS.length;i++) eo+='<option'+(it&&it.epoca===EPOCAS[i]?" selected":"")+'>'+esc(EPOCAS[i])+'</option>';
-  var po='<option value="">-- Selecciona un proveedor --</option>'; for(var i=0;i<DB.provs.length;i++) po+='<option value="'+DB.provs[i].id+'"'+(it&&it.proveedorId===DB.provs[i].id?" selected":"")+'>'+esc(DB.provs[i].nombre)+'</option>';
+  var provsOrdF2=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
+  var po='<option value="">-- Selecciona un proveedor --</option>'; for(var i=0;i<provsOrdF2.length;i++) po+='<option value="'+provsOrdF2[i].id+'"'+(it&&it.proveedorId===provsOrdF2[i].id?" selected":"")+'>'+esc(provsOrdF2[i].nombre)+'</option>';
   var h='<div class="g2"><div class="fld"><label class="lbl" id="slbl">Clave/SKU</label><input class="inp" id="fsk" value="'+esc(it?it.sku:"")+'"/></div>';
   h+='<div class="fld"><label class="lbl">Cantidad</label><input class="inp" type="number" min="0" id="fca" value="'+(it?it.cantidad:1)+'"/></div></div>';
   h+='<div class="fld"><label class="lbl">Descripcion</label><textarea class="inp" id="fde" rows="2">'+esc(it?it.descripcion:"")+'</textarea></div>';
@@ -1483,14 +1487,22 @@ function respaldoInventarioProveedores(){
   var provIds=Object.keys(porProv);
   if(!provIds.length){ alert("No hay piezas disponibles en inventario para respaldar."); return; }
 
-  // Ordenar proveedores alfabeticamente, igual que en la pestaña Proveedores
+  // Ordenar proveedores alfabeticamente, PERO con JDH siempre primero (a peticion de Laura:
+  // JDH es su proveedor de compra directa mas usado y quiere verlo de inmediato).
   var provsOrd=provIds.map(function(pid){ return {id:pid, prov:getProv(pid)}; })
     .filter(function(x){ return x.prov; })
-    .sort(function(a,b){ return (a.prov.nombre||"").localeCompare(b.prov.nombre||"",'es',{sensitivity:'base'}); });
+    .sort(function(a,b){
+      var aEsJDH=(a.prov.nombre||"").trim().toUpperCase()==="JDH";
+      var bEsJDH=(b.prov.nombre||"").trim().toUpperCase()==="JDH";
+      if(aEsJDH&&!bEsJDH) return -1;
+      if(bEsJDH&&!aEsJDH) return 1;
+      return (a.prov.nombre||"").localeCompare(b.prov.nombre||"",'es',{sensitivity:'base'});
+    });
 
   var wb=new ExcelJS.Workbook();
-  var encabezados=["CLAVE","CANT","INGRESO","DESCRIPCION","COSTO","PRECIO VENTA","CATEGORIA","EPOCA","TALLA","NOTAS","TAX","TOTAL","COMISION"];
-  var anchos=[10,6,10,38,8,11,14,10,8,20,8,9,10];
+  // Orden de columnas actualizado: ...NOTAS, COMISION, TAX, TOTAL (antes era TAX, TOTAL, COMISION)
+  var encabezados=["CLAVE","CANT","INGRESO","DESCRIPCION","COSTO","PRECIO VENTA","CATEGORIA","EPOCA","TALLA","NOTAS","COMISION","TAX","TOTAL"];
+  var anchos=[10,6,10,38,8,11,14,10,8,20,10,8,9];
 
   // Colores de relleno por columna (imitando el Excel de referencia: bloques de color por grupo de columnas).
   // ExcelJS usa ARGB de 8 caracteres (alpha + rgb), sin el prefijo "#".
@@ -1519,11 +1531,14 @@ function respaldoInventarioProveedores(){
       cell.alignment={horizontal:"center"};
     }
 
-    // Filas de datos + formulas EN VIVO para TAX, TOTAL y COMISION (col K, L, M),
-    // identicas a la formula fiscal que usa Arcana internamente (tarjeta como referencia):
+    // Filas de datos + formulas EN VIVO. Nuevo orden de columnas: K=COMISION, L=TAX, M=TOTAL.
+    // Formula fiscal identica a la que usa Arcana internamente (tarjeta como referencia):
     // Tax = Precio - (Precio/1.16) + Precio*0.015 + Precio*0.0406
     // Total = Precio - Tax
     // Comision = Total - Costo
+    // Como Comision ahora va PRIMERO mientras que matematicamente depende de Total,
+    // se calcula Tax primero como formula auxiliar en L, Total en M, y Comision en K
+    // referenciando M y E (el orden de escritura de formulas no afecta el resultado).
     for(var i=0;i<items.length;i++){
       var it=items[i], filaN=i+2;
       var costo=Math.round((it.costoProveedor||0)*100)/100;
@@ -1531,10 +1546,19 @@ function respaldoInventarioProveedores(){
       ws.addRow([
         it.sku||"", it.cantidad||0, mesAnioAbrev(it.fechaIngreso), it.descripcion||"",
         costo, precio, it.categoria||"", it.epoca||"", it.talla||"", it.notas||"",
+        {formula:"ROUND(M"+filaN+"-E"+filaN+",0)"},
         {formula:"ROUND(F"+filaN+"-(F"+filaN+"/1.16)+F"+filaN+"*0.015+F"+filaN+"*0.0406,0)"},
-        {formula:"ROUND(F"+filaN+"-K"+filaN+",0)"},
-        {formula:"ROUND(L"+filaN+"-E"+filaN+",0)"}
+        {formula:"ROUND(F"+filaN+"-L"+filaN+",0)"}
       ]);
+    }
+
+    // Colorear TODA la columna de datos (no solo el encabezado), para que el bloque
+    // de color se vea continuo de arriba a abajo, como en la plantilla de Laura.
+    for(var i=0;i<items.length;i++){
+      var filaD=ws.getRow(i+2);
+      for(var c=0;c<encabezados.length;c++){
+        filaD.getCell(c+1).fill={type:"pattern", pattern:"solid", fgColor:{argb:coloresCol[c]}};
+      }
     }
 
     // Congelar la primera fila (encabezados) para que se mantenga visible al desplazarse.
@@ -1543,7 +1567,7 @@ function respaldoInventarioProveedores(){
 
   var f2=hoy();
   var partesF=f2.split("-"); // [YYYY, MM, DD]
-  var nombreArchivo="a-invent-"+partesF[0]+"-"+MESES_ES[parseInt(partesF[1],10)-1]+"-"+parseInt(partesF[2],10)+".xlsx";
+  var nombreArchivo="A-INV-"+partesF[0]+"-"+MESES_ES[parseInt(partesF[1],10)-1]+"-"+parseInt(partesF[2],10)+".xlsx";
 
   wb.xlsx.writeBuffer().then(function(buffer){
     var blob=new Blob([buffer],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
