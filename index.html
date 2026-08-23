@@ -163,6 +163,10 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 </head>
 <body>
+<div id="sync-pendiente-alerta" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#7a2020;color:#fff;padding:9px 14px;font-size:13px;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.4);align-items:center;justify-content:center;gap:10px">
+  <span style="font-size:16px">&#9888;&#65039;</span>
+  <span><b>Hay cambios sin guardar en internet.</b> No cierres ni recargues esta pantalla hasta que el indicador diga "Sincronizado".</span>
+</div>
 <div id="apa-alerta" style="display:none;position:fixed;top:10px;right:10px;z-index:9000;background:#1a1610;border:1px solid #f59e0b66;border-radius:10px;padding:9px 12px;max-width:270px;box-shadow:0 4px 16px rgba(0,0,0,.5);font-size:12px">
   <div style="display:flex;align-items:center;gap:8px">
     <span style="font-size:15px">&#9200;</span>

@@ -151,31 +151,72 @@ function fromFB(fbVal){
   return null;
 }
 
+// Bandera de "cambios pendientes de sincronizar": se activa al guardar localmente,
+// y solo se apaga cuando Firebase CONFIRMA haber recibido ese guardado. Esto permite
+// detectar, incluso despues de recargar la pagina, si hay trabajo hecho que nunca
+// llego a la nube y esta en riesgo de perderse.
+function marcarPendiente(pendiente){
+  try{ localStorage.setItem("vntPendiente", pendiente?"1":"0"); }catch(e){}
+  mostrarAlertaSyncPendiente(pendiente);
+}
+function mostrarAlertaSyncPendiente(mostrar){
+  var el=ge("sync-pendiente-alerta");
+  if(!el) return;
+  el.style.display = mostrar ? "flex" : "none";
+  // Empujar el encabezado hacia abajo (en vez de que el banner lo tape) mientras
+  // la alerta este visible, para que siga siendo legible.
+  var hdr=ge("hdr");
+  if(hdr) hdr.style.marginTop = mostrar ? "38px" : "0";
+}
+
 function dbSave(){
   _itemIndex=null; _provIndex=null; // invalidar indices (datos cambiaron)
   isLocalChange = true; // Mark as local change to avoid echo
   try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+  marcarPendiente(true); // hay cambios locales que aun no se confirman en Firebase
   if(syncTimeout) clearTimeout(syncTimeout);
-  syncTimeout = setTimeout(function(){
-    fbStatus("Guardando...", "#c9a96e");
-    var body = JSON.stringify({fields:{
-      items: toFB(DB.items),
-      provs: toFB(DB.provs),
-      ventas: toFB(DB.ventas),
-      apartados: toFB(DB.apartados||[]),
-      saldos: toFB(DB.saldos||[]),
-      archivo: toFB(DB.archivo||[]),
-      config: toFB(DB.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}),
-      updated: toFB(new Date().toISOString())
-    }});
-    fetch(FB_BASE+"?key="+FB_API_KEY, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:body})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        if(d.error){ fbStatus("Sin conexion (local)", "#f59e0b"); console.log("FB save error:", d.error); }
-        else fbStatus("Sincronizado", "#4ade80");
-      })
-      .catch(function(e){ fbStatus("Sin conexion (local)", "#f59e0b"); });
-  }, 1500);
+  syncTimeout = setTimeout(function(){ intentarGuardarFB(0); }, 1500);
+}
+
+// Intenta guardar en Firebase, con reintentos automaticos si falla por conexion.
+// Hasta 5 intentos, con espera creciente (2s, 4s, 8s, 16s, 32s) para no saturar
+// una red inestable. Mientras no se confirme, la alerta de "sin sincronizar" permanece.
+function intentarGuardarFB(intento){
+  fbStatus(intento>0?("Reintentando guardar... ("+intento+")"):"Guardando...", "#c9a96e");
+  var body = JSON.stringify({fields:{
+    items: toFB(DB.items),
+    provs: toFB(DB.provs),
+    ventas: toFB(DB.ventas),
+    apartados: toFB(DB.apartados||[]),
+    saldos: toFB(DB.saldos||[]),
+    archivo: toFB(DB.archivo||[]),
+    config: toFB(DB.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}),
+    updated: toFB(new Date().toISOString())
+  }});
+  fetch(FB_BASE+"?key="+FB_API_KEY, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:body})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d.error){
+        console.log("FB save error:", d.error);
+        reintentarOAvisar(intento);
+      } else {
+        fbStatus("Sincronizado", "#4ade80");
+        marcarPendiente(false); // confirmado: ya no hay riesgo de perder este cambio
+      }
+    })
+    .catch(function(e){ reintentarOAvisar(intento); });
+}
+function reintentarOAvisar(intento){
+  if(intento<5){
+    var espera=Math.pow(2,intento+1)*1000; // 2s,4s,8s,16s,32s
+    fbStatus("Sin conexion, reintentando...", "#f59e0b");
+    setTimeout(function(){ intentarGuardarFB(intento+1); }, espera);
+  } else {
+    // Se agotaron los reintentos automaticos: dejar la alerta visible de forma
+    // persistente. El dato NO se pierde (sigue en localStorage), pero no se debe
+    // cerrar el navegador ni recargar hasta reconectar, o quedaria sin subir.
+    fbStatus("Sin conexion - cambios guardados solo en este equipo", "#f87171");
+  }
 }
 
 function dbLoad(){
@@ -186,6 +227,11 @@ function dbLoad(){
   }catch(e){ console.log("localStorage error:", e); }
   if(!DB.config) DB.config={accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""};
   applyConfig();
+  // Si esta computadora se cerro/recargo con cambios sin confirmar en una sesion
+  // anterior, mostrar la alerta desde ya (no esperar a que termine de cargar).
+  var pendienteInicial=false;
+  try{ pendienteInicial = localStorage.getItem("vntPendiente")==="1"; }catch(e){}
+  if(pendienteInicial) mostrarAlertaSyncPendiente(true);
   fbStatus("Conectando...", "#6b6358");
   console.log("FB_BASE:", FB_BASE);
   console.log("FB_API_KEY:", FB_API_KEY ? "present" : "missing");
@@ -224,13 +270,29 @@ function dbLoad(){
       if(doc.fields){
         var d = fromFB({mapValue:{fields:doc.fields}});
         if(d&&d.items&&d.provs){
-          DB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
-          _itemIndex=null; _provIndex=null;
-          detectarDuplicados(true); // red de seguridad: auto-reparar IDs duplicados
-          try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
-          RI(); PH(); applyConfig();
-          fbStatus("Conectado", "#4ade80");
-          startListener(); // Start real-time sync
+          // PROTECCION: si esta computadora tiene cambios locales que nunca se
+          // confirmaron en Firebase (por ejemplo, quedaron pendientes por una
+          // caida de conexion), NO se descartan al recargar. En vez de reemplazar
+          // DB con lo que viene de la nube, se conserva la copia local (que ya
+          // esta cargada en memoria desde el inicio de esta funcion) y se reintenta
+          // subirla de inmediato, para no perder ventas o cambios de inventario.
+          var hayPendiente=false;
+          try{ hayPendiente = localStorage.getItem("vntPendiente")==="1"; }catch(e){}
+          if(hayPendiente && DB && DB.items && DB.provs){
+            fbStatus("Cambios sin sincronizar detectados - reenviando...", "#f59e0b");
+            mostrarAlertaSyncPendiente(true);
+            RI(); PH(); applyConfig();
+            intentarGuardarFB(0); // reintentar subir la copia local, no la de la nube
+            startListener();
+          } else {
+            DB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
+            _itemIndex=null; _provIndex=null;
+            detectarDuplicados(true); // red de seguridad: auto-reparar IDs duplicados
+            try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+            RI(); PH(); applyConfig();
+            fbStatus("Conectado", "#4ade80");
+            startListener(); // Start real-time sync
+          }
         } else {
           fbStatus("Conectado (datos vacios)", "#c9a96e");
           dbSave();
