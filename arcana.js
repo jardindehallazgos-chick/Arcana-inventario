@@ -1421,6 +1421,7 @@ function RChecklist(){
   h+=fila(false, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
   h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
   h+=fila(false, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
+  h+=fila(false, "7. Genera el Excel de inventario (INV-Mes)", "Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.");
 
   // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
   h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
@@ -1429,9 +1430,58 @@ function RChecklist(){
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado)+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("5. Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado)+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("6. Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",yaCerrado,"#f59e0b")+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("7. Excel INV-Mes","respaldoInventarioProveedores()",yaCerrado)+'</div>';
   h+='</div>';
 
   el.innerHTML=h;
+}
+
+// FUENTE UNICA DE VERDAD para "cuanto se vendio/ingreso en el mes X".
+// Usada por el dialogo de cierre, el historial de Reportes, y el Reporte General
+// de Ventas, para que los tres SIEMPRE muestren el mismo numero. Antes cada uno
+// tenia su propia formula (una incluia canceladas restando en vez de excluirlas,
+// otra no contaba abonos de apartados), y por eso los totales no coincidian entre si.
+// Regla: ingreso = ventas directas NO canceladas + abonos de apartados de ese mes
+// (excepto cancelados) + saldos a favor retenidos que expiraron ese mes.
+function ingresoRealMes(ym){
+  var ingr=0, ventasCount=0, piezas=0;
+  for(var i=0;i<DB.ventas.length;i++){
+    var v=DB.ventas[i];
+    if((v.fecha||"").slice(0,7)!==ym) continue;
+    if(v.cancelacion){
+      // La venta-devolucion SI debe sumarse (su total ya viene en negativo):
+      // es lo que compensa el total completo de la venta original, que nunca
+      // se modifica cuando se cancela solo una de sus lineas.
+      ingr+=v.total;
+      continue;
+    }
+    if(v.esApartado){
+      // El ingreso de un apartado viene de sus abonos (contados abajo por fecha),
+      // no de esta linea de "venta resumen" que se crea al liquidar.
+      ventasCount++;
+      for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezas+=v.lineas[j].cantidad;
+    } else {
+      ingr+=v.total; ventasCount++;
+      for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezas+=v.lineas[j].cantidad;
+    }
+  }
+  for(var i=0;i<DB.apartados.length;i++){
+    var apa=DB.apartados[i];
+    if(apa.estado==="cancelado"||!apa.abonos) continue;
+    for(var j=0;j<apa.abonos.length;j++){
+      var ab=apa.abonos[j];
+      if((ab.fecha||"").slice(0,7)!==ym) continue;
+      ingr+=ab.monto||0;
+    }
+  }
+  for(var i=0;i<(DB.saldos||[]).length;i++){
+    var sa=DB.saldos[i];
+    if(sa.usado||sa.contabilizadoRetenido) continue;
+    if((sa.fechaVencimiento||"").slice(0,7)!==ym) continue;
+    if(sa.fechaVencimiento>=hoy()) continue;
+    ingr+=sa.monto||0;
+  }
+  return {ingreso:ingr, ventas:ventasCount, piezas:piezas};
 }
 
 function RMeses(){
@@ -1457,12 +1507,8 @@ function RMeses(){
   for(var m=0;m<claves.length;m++){
     var ym=claves[m], vts=meses[ym];
     var esMesActual=(ym===mesActual);
-    var totalMes=0,ventasMes=0,piezasMes=0;
-    for(var i=0;i<vts.length;i++){
-      var v=vts[i];
-      totalMes+=v.total;
-      if(!v.cancelacion){ ventasMes++; for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezasMes+=v.lineas[j].cantidad; }
-    }
+    var resumenMes=ingresoRealMes(ym);
+    var totalMes=resumenMes.ingreso, ventasMes=resumenMes.ventas, piezasMes=resumenMes.piezas;
     var abierto=m===0; // primer mes abierto por defecto
     h+='<div class="box" style="margin-bottom:11px">';
     h+='<div onclick="toggleMes(\''+ym+'\')" style="display:flex;justify-content:space-between;align-items:center;padding:13px 15px;cursor:pointer;background:#141210">';
@@ -1684,16 +1730,16 @@ function cerrarMes(ym){
   }
   // Compute month summary
   var pagoTot={efectivo:0,tarjeta:0,transferencia:0};
-  var totalMes=0,ventasMes=0,piezasMes=0,ingr=0,cost=0,accIva=0,accIsr=0,accTerm=0,devol=0;
+  var ventasMes=0,piezasMes=0,ingr=0,cost=0,accIva=0,accIsr=0,accTerm=0,devol=0;
   var porProv={};
   var restantes=[];
   for(var i=0;i<DB.ventas.length;i++){
     var v=DB.ventas[i];
     if((v.fecha||"").slice(0,7)!==ym){ restantes.push(v); continue; }
     var mp=v.mpago||"efectivo";
-    totalMes+=v.total;
     if(v.cancelacion){
       devol+=Math.abs(v.total);
+      ingr+=v.total; // v.total ya es negativo: compensa el total de la venta original que no se modifico
       var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
       pagoTot[mp]=(pagoTot[mp]||0)+v.total;
     } else if(v.esApartado){
@@ -1780,10 +1826,10 @@ function cerrarMes(ym){
     pagoTot["efectivo"]=(pagoTot["efectivo"]||0)+saldoRetenidoMes; // se asume retenido como efectivo
   }
   var ganancia=ingr-accIva-accIsr-accTerm-cost;
-  if(!confirm("Cerrar "+nombreMes(ym)+"?\n\nTotal: "+fmt(totalMes)+"\nVentas: "+ventasMes+" | Piezas: "+piezasMes+"\n\nLas ventas de este mes saldran de los totales activos y su resumen quedara guardado en el desempeno mensual. Esta accion no se puede deshacer (pero ya tienes el CSV descargado).")) return;
+  if(!confirm("Cerrar "+nombreMes(ym)+"?\n\nTotal: "+fmt(ingr)+"\nVentas: "+ventasMes+" | Piezas: "+piezasMes+"\n\nLas ventas de este mes saldran de los totales activos y su resumen quedara guardado en el desempeno mensual. Esta accion no se puede deshacer (pero ya tienes el CSV descargado).")) return;
   // Save summary to archivo
   DB.archivo.push({
-    mes:ym, total:totalMes, ventas:ventasMes, piezas:piezasMes,
+    mes:ym, total:ingr, ventas:ventasMes, piezas:piezasMes,
     ingreso:ingr, costo:cost, ganancia:ganancia,
     iva:accIva, isr:accIsr, term:accTerm, devoluciones:devol,
     efectivo:pagoTot.efectivo||0, tarjeta:pagoTot.tarjeta||0, transferencia:pagoTot.transferencia||0,
@@ -2911,7 +2957,7 @@ function reporteGeneralVentas(){
   css+='td{padding:2px 6px;border:1px solid #f0ece2}.tot-prov{text-align:right;font-size:8.3pt;font-weight:700;color:#6b4e2e;padding:2px 4px 6px}';
   css+='.totales{margin-top:10px;font-size:11pt;font-weight:700;color:#4a3620;text-align:right}@media print{body{margin:0}}';
 
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte General de Ventas - '+esc(nombreM)+'<\/title><style>'+css+'<\/style><\/head><body>';
   doc+='<h1>Reporte General de Ventas<\/h1><div class="sub">'+esc(nombreM)+' &middot; Ventas canceladas excluidas &middot; montos con descuentos ya aplicados &middot; Jardín de Hallazgos<\/div>';
 
   function renderSeccion(titulo, provs){
@@ -2940,6 +2986,8 @@ function reporteGeneralVentas(){
   var rc=renderSeccion("Consignatarios", provsConsig);
   var rd=renderSeccion("Compra Directa", provsDirecta);
   doc+='<div class="totales" style="margin-top:14px;font-size:13pt;border-top:2px solid #6b4e2e;padding-top:8px">TOTAL GENERAL DEL MES — Costo: '+fmt(rc[0]+rd[0])+' &middot; Venta: '+fmt(rc[1]+rd[1])+'<\/div>';
+  var resumenReal=ingresoRealMes(ym);
+  doc+='<div style="margin-top:6px;font-size:8.5pt;color:#888;text-align:right">Este total valora cada pieza por su precio de venta. El ingreso que se archiva al cerrar el mes (que cuenta abonos de apartados por su fecha real de cobro) es: '+fmt(resumenReal.ingreso)+'. Es normal que difieran ligeramente si hay apartados con abonos en curso.<\/div>';
   doc+='<\/body><\/html>';
 
   var w=window.open("","_blank","width=900,height=700");
@@ -2992,7 +3040,7 @@ function reporteConsignatarios(){
   css+='th{background:#f5efe4;text-align:left;padding:5px 8px;border:1px solid #e0d6c2}td{padding:5px 8px;border:1px solid #ece5d6}';
   css+='.totales{margin-top:14px;font-size:13pt;font-weight:700;color:#4a3620;text-align:right;border-top:2px solid #c9a96e;padding-top:8px}@media print{body{margin:0}}';
 
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte de Consignatarios - '+esc(nombreM)+'<\/title><style>'+css+'<\/style><\/head><body>';
   for(var i=0;i<provs.length;i++){
     var d=provs[i];
     d.lineas.sort(function(a,b){ return (a.fecha||"").localeCompare(b.fecha||""); });
@@ -3036,7 +3084,7 @@ function reporteProveedor(provId){
   css+='.firma{flex:1;text-align:center}.firma .linea{border-top:1px solid #000;margin-top:36px;padding-top:5px;font-size:11px}';
   css+='@page{margin:14mm 12mm}@media print{body{margin:0}}';
 
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Anexo A - '+esc(nombreCompleto)+' - '+esc(nombreMes(hoy().slice(0,7)))+'<\/title><style>'+css+'<\/style><\/head><body>';
   var logoPdf=(DB.config&&DB.config.logo)||"";
   if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;object-fit:contain;float:right">';
   doc+='<h1>Jardín de Hallazgos</h1>';
@@ -3096,7 +3144,7 @@ function generarPDF(){
   css+='.avail{background:#e8f5e9;color:#2e7d32}.sold{background:#fce4ec;color:#c62828}';
   css+='@page{margin:12mm 10mm}';
   css+='@media print{body{margin:0}}';
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte por Proveedor - '+esc(nombreMes(hoy().slice(0,7)))+'<\/title><style>'+css+'<\/style><\/head><body>';
   var logoPdf=(DB.config&&DB.config.logo)||"";
   if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;border-radius:8px;object-fit:cover;float:right;margin-top:-4px">';
   doc+='<h1>Jardín de Hallazgos</h1>';
