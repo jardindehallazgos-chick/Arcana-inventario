@@ -1250,62 +1250,24 @@ function RCorte(){
   el.innerHTML=h;
 }
 function RR(){
-  var pz=0,vInv=0,ingr=0,cost=0;
-  var accIva=0,accIsr=0,accTerm=0;
+  var pz=0,vInv=0;
   for(var i=0;i<DB.items.length;i++){pz+=DB.items[i].cantidad||0;vInv+=(DB.items[i].precioVenta||0)*(DB.items[i].cantidad||0);}
-  for(var i=0;i<DB.ventas.length;i++){
-    var vi=DB.ventas[i];
-    var mpv=vi.mpago||"efectivo";
-    if(vi.cancelacion){
-      ingr+=vi.total; // negative
-      var fc=fiscal(Math.abs(vi.total),mpv);
-      accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
-    } else if(vi.esApartado){
-      for(var j=0;j<vi.lineas.length;j++){
-        var l=vi.lineas[j]; if(l.cancelada) continue;
-        var provIdL=l.proveedorId, costoPL=l.costoProveedor;
-        if(provIdL===undefined){ var itFb=getItem(l.itemId); provIdL=itFb?itFb.proveedorId:null; costoPL=itFb?(itFb.costoProveedor||0):0; }
-        if(provIdL){ var pvL=getProv(provIdL); if(pvL&&pvL.tipo==="consignacion") cost+=(costoPL||0)*l.cantidad; }
-      }
-    } else {
-      ingr+=vi.total;
-      var fv=fiscal(vi.total,mpv);
-      accIva+=fv.iva; accIsr+=fv.isr; accTerm+=fv.term;
-      for(var j=0;j<vi.lineas.length;j++){
-        var l=vi.lineas[j]; if(l.cancelada) continue;
-        var provIdL2=l.proveedorId, costoPL2=l.costoProveedor;
-        if(provIdL2===undefined){ var itFb2=getItem(l.itemId); provIdL2=itFb2?itFb2.proveedorId:null; costoPL2=itFb2?(itFb2.costoProveedor||0):0; }
-        if(provIdL2){ var pvL2=getProv(provIdL2); if(pvL2&&pvL2.tipo==="consignacion") cost+=(costoPL2||0)*l.cantidad; }
-      }
-    }
-  }
-  // Ingreso por abonos: cada abono recibido cuenta como ingreso (dinero real en caja),
-  // de cualquier apartado excepto cancelados (esos van a saldo a favor, no a ingreso).
-  for(var i=0;i<DB.apartados.length;i++){
-    var apa=DB.apartados[i];
-    if(apa.estado==="cancelado") continue;
-    if(!apa.abonos) continue;
-    for(var j=0;j<apa.abonos.length;j++){
-      var ab=apa.abonos[j], mpa=ab.mpago||"efectivo";
-      ingr+=ab.monto||0;
-      var fa=fiscal(ab.monto||0,mpa);
-      accIva+=fa.iva; accIsr+=fa.isr; accTerm+=fa.term;
-    }
-  }
-  // Saldo a favor retenido (expirado sin usar) = ingreso del negocio, sin pasar por proveedor.
-  for(var i=0;i<(DB.saldos||[]).length;i++){
-    var sa=DB.saldos[i];
-    if(sa.usado) continue;
-    if(sa.fechaVencimiento && sa.fechaVencimiento<hoy()){
-      ingr+=sa.monto||0; // retenido como ingreso
-    }
-  }
+  // Los KPIs de dinero (ingresos, costo a proveedor, ganancia, fiscal) se calculan
+  // SOLO del mes en curso, con la misma regla exacta que usa el cierre de mes:
+  // el ingreso cuenta en el mes de la fecha de cada abono/venta, mientras que el
+  // costo/deuda a proveedor cuenta en el mes en que la pieza se completo (liquido),
+  // aunque parte del dinero haya entrado en un mes anterior. Antes esta tarjeta
+  // sumaba TODO el historico sin filtrar, lo que no coincidia con "Ingresos del
+  // mes" en Arcana Administracion.
+  var mesActual=diaComercial().slice(0,7);
+  var r=ingresoRealMes(mesActual);
+  var ingr=r.ingreso, cost=r.costo, accIva=r.iva, accIsr=r.isr, accTerm=r.term;
   var f={iva:accIva,isr:accIsr,term:accTerm};
   var gn=ingr-accIva-accIsr-accTerm-cost;
-  var kpis=[["Conceptos",DB.items.length+" productos","#c9a96e"],["Piezas disponibles",pz+" piezas","#4ade80"],["Valor inventario",fmt(vInv),"#c9a96e"],["Ventas registradas",DB.ventas.length,"#94a3b8"],["Ingresos totales",fmt(ingr),"#4ade80"],["Costo proveedores",fmt(cost),"#f87171"],["Ganancia neta real",fmt(gn),"#4ade80"]];
+  var kpis=[["Conceptos",DB.items.length+" productos","#c9a96e"],["Piezas disponibles",pz+" piezas","#4ade80"],["Valor inventario",fmt(vInv),"#c9a96e"],["Ventas registradas",DB.ventas.length,"#94a3b8"],["Ingresos del mes",fmt(ingr),"#4ade80"],["Costo proveedores (mes)",fmt(cost),"#f87171"],["Ganancia neta (mes)",fmt(gn),"#4ade80"]];
   var kh=""; for(var i=0;i<kpis.length;i++) kh+='<div class="kpi"><div class="kl">'+kpis[i][0]+'</div><div class="kv" style="color:'+kpis[i][2]+'">'+kpis[i][1]+'</div></div>';
   ge("kgrid").innerHTML=kh;
-  ge("rfiscal").innerHTML='<div class="g3" style="gap:12px"><div><div class="kl">IVA acumulado</div><div style="font-size:17px;font-weight:700;color:#f87171">'+fmt(f.iva)+'</div></div><div><div class="kl">Reserva ISR RESICO 1.5%</div><div style="font-size:17px;font-weight:700;color:#f59e0b">'+fmt(f.isr)+'</div></div><div><div class="kl">Comisiones terminal</div><div style="font-size:17px;font-weight:700;color:#818cf8">'+fmt(f.term)+'</div></div></div><div class="sm mut" style="margin-top:9px">Efectivo sin impuestos ni comision. Transferencia con impuestos sin comision. Tarjeta con todo.</div>';
+  ge("rfiscal").innerHTML='<div class="g3" style="gap:12px"><div><div class="kl">IVA acumulado (mes)</div><div style="font-size:17px;font-weight:700;color:#f87171">'+fmt(f.iva)+'</div></div><div><div class="kl">Reserva ISR RESICO 1.5% (mes)</div><div style="font-size:17px;font-weight:700;color:#f59e0b">'+fmt(f.isr)+'</div></div><div><div class="kl">Comisiones terminal (mes)</div><div style="font-size:17px;font-weight:700;color:#818cf8">'+fmt(f.term)+'</div></div></div><div class="sm mut" style="margin-top:9px">Efectivo sin impuestos ni comision. Transferencia con impuestos sin comision. Tarjeta con todo.</div>';
   var provFiltro=(ge("rprov-filtro")||{}).value||"conventas";
   var ph="",provMostrados=0; 
   for(var i=0;i<DB.provs.length;i++){
@@ -1442,34 +1404,62 @@ function RChecklist(){
 // Regla: ingreso = ventas directas NO canceladas + abonos de apartados de ese mes
 // (excepto cancelados) + saldos a favor retenidos que expiraron ese mes.
 function ingresoRealMes(ym){
-  var ingr=0, ventasCount=0, piezas=0;
+  var ingr=0, ventasCount=0, piezas=0, cost=0, accIva=0, accIsr=0, accTerm=0;
   for(var i=0;i<DB.ventas.length;i++){
     var v=DB.ventas[i];
     if((v.fecha||"").slice(0,7)!==ym) continue;
+    var mp=v.mpago||"efectivo";
     if(v.cancelacion){
       // La venta-devolucion SI debe sumarse (su total ya viene en negativo):
       // es lo que compensa el total completo de la venta original, que nunca
       // se modifica cuando se cancela solo una de sus lineas.
       ingr+=v.total;
+      var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
       continue;
     }
     if(v.esApartado){
       // El ingreso de un apartado viene de sus abonos (contados abajo por fecha),
-      // no de esta linea de "venta resumen" que se crea al liquidar.
+      // no de esta linea de "venta resumen" que se crea al liquidar. PERO la deuda
+      // al proveedor (costo) SI se cuenta aqui, en el mes de LIQUIDACION: es cuando
+      // la pieza queda pagada al 100%, aunque parte del dinero haya entrado antes.
       ventasCount++;
-      for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezas+=v.lineas[j].cantidad;
+      for(var j=0;j<v.lineas.length;j++){
+        if(v.lineas[j].cancelada) continue;
+        piezas+=v.lineas[j].cantidad;
+        var lin=v.lineas[j];
+        var provId=lin.proveedorId, costoP=lin.costoProveedor;
+        if(provId===undefined){ var itFb=getItem(lin.itemId); provId=itFb?itFb.proveedorId:null; costoP=itFb?(itFb.costoProveedor||0):0; }
+        if(provId){
+          var pv=getProv(provId);
+          if(pv&&pv.tipo==="consignacion") cost+=(costoP||0)*lin.cantidad;
+        }
+      }
     } else {
       ingr+=v.total; ventasCount++;
-      for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezas+=v.lineas[j].cantidad;
+      var fv=fiscal(v.total,mp); accIva+=fv.iva; accIsr+=fv.isr; accTerm+=fv.term;
+      for(var j=0;j<v.lineas.length;j++){
+        if(v.lineas[j].cancelada) continue;
+        piezas+=v.lineas[j].cantidad;
+        var lin2=v.lineas[j];
+        var provId2=lin2.proveedorId, costoP2=lin2.costoProveedor;
+        if(provId2===undefined){ var itFb2=getItem(lin2.itemId); provId2=itFb2?itFb2.proveedorId:null; costoP2=itFb2?(itFb2.costoProveedor||0):0; }
+        if(provId2){
+          var pv2=getProv(provId2);
+          if(pv2&&pv2.tipo==="consignacion") cost+=(costoP2||0)*lin2.cantidad;
+        }
+      }
     }
   }
+  // Ingreso por abonos: cada abono cuenta en el mes de SU FECHA (no la de liquidacion).
   for(var i=0;i<DB.apartados.length;i++){
     var apa=DB.apartados[i];
     if(apa.estado==="cancelado"||!apa.abonos) continue;
     for(var j=0;j<apa.abonos.length;j++){
       var ab=apa.abonos[j];
       if((ab.fecha||"").slice(0,7)!==ym) continue;
+      var mpa=ab.mpago||"efectivo";
       ingr+=ab.monto||0;
+      var fa=fiscal(ab.monto||0,mpa); accIva+=fa.iva; accIsr+=fa.isr; accTerm+=fa.term;
     }
   }
   for(var i=0;i<(DB.saldos||[]).length;i++){
@@ -1479,7 +1469,7 @@ function ingresoRealMes(ym){
     if(sa.fechaVencimiento>=hoy()) continue;
     ingr+=sa.monto||0;
   }
-  return {ingreso:ingr, ventas:ventasCount, piezas:piezas};
+  return {ingreso:ingr, ventas:ventasCount, piezas:piezas, costo:cost, iva:accIva, isr:accIsr, term:accTerm};
 }
 
 function RMeses(){
