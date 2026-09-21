@@ -427,6 +427,19 @@ function provsAlfabetico(lista){
     return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'});
   });
 }
+// Igual que provsAlfabetico, pero con JDH SIEMPRE primero (proveedor propio de
+// la tienda y el mas consultado). Se usa en Reportes > Por proveedor, en el
+// filtro de proveedores de Inventario y en el selector de Importar datos.
+// Mismo criterio que el Excel INV-Mes para reconocer a JDH.
+function esJDH(p){ return String((p&&p.nombre)||"").trim().toUpperCase()==="JDH"; }
+function provsJDHPrimero(lista){
+  return provsAlfabetico(lista).sort(function(a,b){
+    var aJ=esJDH(a), bJ=esJDH(b);
+    if(aJ&&!bJ) return -1;
+    if(bJ&&!aJ) return 1;
+    return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'});
+  });
+}
 // Mapa itemId -> true de las piezas RESERVADAS en apartados activos o en
 // resguardo (es decir, sin liquidar). Estas piezas tienen cantidad 0 en el
 // inventario porque el apartado descuenta el stock al crearse, pero NO estan
@@ -668,7 +681,7 @@ function initF(){
   h='<option value="">Todas las epocas</option>';
   for(var i=0;i<EPOCAS.length;i++) h+='<option value="'+esc(EPOCAS[i])+'"'+(ve===EPOCAS[i]?" selected":"")+'>'+esc(EPOCAS[i])+'</option>';
   fe.innerHTML=h;
-  var provsOrdF=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
+  var provsOrdF=provsJDHPrimero();
   h='<option value="">Todos los proveedores</option>';
   for(var i=0;i<provsOrdF.length;i++) h+='<option value="'+provsOrdF[i].id+'"'+(vp===provsOrdF[i].id?" selected":"")+'>'+esc(provsOrdF[i].nombre)+'</option>';
   fp.innerHTML=h;
@@ -1344,7 +1357,7 @@ function RR(){
   ge("rfiscal").innerHTML='<div class="g3" style="gap:12px"><div><div class="kl">IVA acumulado (mes)</div><div style="font-size:17px;font-weight:700;color:#f87171">'+fmt(f.iva)+'</div></div><div><div class="kl">Reserva ISR RESICO 1.5% (mes)</div><div style="font-size:17px;font-weight:700;color:#f59e0b">'+fmt(f.isr)+'</div></div><div><div class="kl">Comisiones terminal (mes)</div><div style="font-size:17px;font-weight:700;color:#818cf8">'+fmt(f.term)+'</div></div></div><div class="sm mut" style="margin-top:9px">Efectivo sin impuestos ni comision. Transferencia con impuestos sin comision. Tarjeta con todo.</div>';
   var provFiltro=(ge("rprov-filtro")||{}).value||"conventas";
   var ph="",provMostrados=0; 
-  var provsTabla=provsAlfabetico();
+  var provsTabla=provsJDHPrimero();
   for(var i=0;i<provsTabla.length;i++){
     var p=provsTabla[i],enT=0,inP=0,cP=0;
     for(var j=0;j<DB.items.length;j++) if(DB.items[j].proveedorId===p.id) enT+=DB.items[j].cantidad||0;
@@ -1365,9 +1378,9 @@ function RR(){
     // Filter: only show providers with sales unless "todos"
     if(provFiltro==="conventas" && inP===0) continue;
     provMostrados++;
-    ph+='<tr style="background:'+(provMostrados%2?"#0d0c0a":"")+'" ><td style="font-weight:600">'+esc(p.nombre)+'</td><td><span class="sm" style="color:'+(p.tipo==="consignacion"?"#f59e0b":"#4ade80")+'">'+(p.tipo==="consignacion"?"Consig.":"Directa")+'</span></td><td class="mut">'+enT+'</td><td class="gold">'+fmt(inP)+'</td><td style="color:#f87171">'+fmt(cP)+'</td><td class="'+(gp>=0?"gp":"gn")+'">'+fmt(gp)+'</td></tr>';
+    ph+='<tr style="background:'+(provMostrados%2?"#0d0c0a":"")+'" ><td style="font-weight:600">'+esc(p.nombre)+'</td><td><span class="sm" style="color:'+(p.tipo==="consignacion"?"#f59e0b":"#4ade80")+'">'+(p.tipo==="consignacion"?"Consig.":"Directa")+'</span></td><td class="mut" data-label="En tienda">'+enT+'</td><td class="gold" data-label="Ingresos">'+fmt(inP)+'</td><td style="color:#f87171" data-label="Costo">'+fmt(cP)+'</td><td class="'+(gp>=0?"gp":"gn")+'" data-label="Ganancia">'+fmt(gp)+'</td></tr>';
   }
-  ge("rprov").innerHTML=ph||'<tr><td colspan="6" style="padding:20px;text-align:center;color:#4a4540">'+(provFiltro==="conventas"?"Ningun proveedor con ventas aun":"Sin datos")+'</td></tr>';
+  ge("rprov").innerHTML=ph||'<tr><td colspan="6" class="full" style="padding:20px;text-align:center;color:#4a4540">'+(provFiltro==="conventas"?"Ningun proveedor con ventas aun":"Sin datos")+'</td></tr>';
   RMeses();
   RChecklist();
   RGrafica();
@@ -1578,8 +1591,8 @@ function RMeses(){
     var totalMes=resumenMes.ingreso, ventasMes=resumenMes.ventas, piezasMes=resumenMes.piezas;
     var abierto=m===0; // primer mes abierto por defecto
     h+='<div class="box" style="margin-bottom:11px">';
-    h+='<div onclick="toggleMes(\''+ym+'\')" style="display:flex;justify-content:space-between;align-items:center;padding:13px 15px;cursor:pointer;background:#141210">';
-    h+='<div style="display:flex;align-items:center;gap:9px"><span id="mes-arrow-'+ym+'" style="color:#6b6358">'+(abierto?"&#9660;":"&#9654;")+'</span><span style="font-family:Georgia,serif;font-size:15px;color:#c9a96e">'+nombreMes(ym)+'</span><span class="sm mut">'+ventasMes+' ventas &middot; '+piezasMes+' piezas</span></div>';
+    h+='<div onclick="toggleMes(\''+ym+'\')" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:13px 15px;cursor:pointer;background:#141210">';
+    h+='<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px 9px"><span id="mes-arrow-'+ym+'" style="color:#6b6358">'+(abierto?"&#9660;":"&#9654;")+'</span><span style="font-family:Georgia,serif;font-size:15px;color:#c9a96e">'+nombreMes(ym)+'</span><span class="sm mut">'+ventasMes+' ventas &middot; '+piezasMes+' piezas</span></div>';
     h+='<span style="font-weight:700;color:#c9a96e;font-size:16px">'+fmt(totalMes)+'</span>';
     h+='</div>';
     h+='<div id="mes-body-'+ym+'" style="display:'+(abierto?"block":"none")+'">';
@@ -1587,7 +1600,10 @@ function RMeses(){
     h+='<button class="btn btns" onclick="descargarMes(\''+ym+'\')">Descargar mes (CSV)</button>';
     h+='<button class="btnr" style="padding:5px 11px;font-size:11px" onclick="cerrarMes(\''+ym+'\')">Cerrar y archivar mes</button>';
     h+='</div>';
-    h+='<div class="tw"><table class="tbl"><thead><tr><th>Fecha</th><th>Pago</th><th>Total</th><th>Prendas vendidas</th></tr></thead><tbody>';
+    // "tbl-stack": en celular cada venta se muestra como tarjeta (fecha, pago y
+    // total en una linea; prendas debajo a todo el ancho) en vez de una tabla
+    // que se corta a la derecha. Son los mismos botones reales, no una copia.
+    h+='<div class="tw"><table class="tbl tbl-stack"><thead><tr><th>Fecha</th><th>Pago</th><th>Total</th><th>Prendas vendidas</th></tr></thead><tbody>';
     for(var i=0;i<vts.length;i++){
       var v=vts[i], mp2=v.mpago||"efectivo";
       var rowBg2=v.cancelacion?"#1a0a0a":(i%2?"#0d0c0a":"");
@@ -1603,7 +1619,7 @@ function RMeses(){
           det2+='<div style="margin-top:4px"><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;font-size:10px">+ Agregar nota</span></div>';
         }
       }
-      h+='<tr style="background:'+rowBg2+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td><td><span style="color:'+(pagoColor[mp2]||"#a09480")+';font-size:12px">'+(pagoLabel[mp2]||mp2)+'</span></td><td style="white-space:nowrap">'+totalDisp2+'</td><td>'+det2+'</td></tr>';
+      h+='<tr style="background:'+rowBg2+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td><td><span style="color:'+(pagoColor[mp2]||"#a09480")+';font-size:12px">'+(pagoLabel[mp2]||mp2)+'</span></td><td style="white-space:nowrap">'+totalDisp2+'</td><td class="full">'+det2+'</td></tr>';
     }
     h+='</tbody></table></div></div></div>';
   }
@@ -2088,7 +2104,7 @@ function impProvChg(){
 }
 function aImp(){
   var po='<option value="__n">+ Crear nuevo proveedor</option>';
-  var provsOrdA=provsAlfabetico();
+  var provsOrdA=provsJDHPrimero();
   for(var i=0;i<provsOrdA.length;i++) po+='<option value="'+provsOrdA[i].id+'">'+esc(provsOrdA[i].nombre)+'</option>';
   var instruc='<div style="background:#0f0e0c;border:1px solid #4ade8033;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.9">';
   instruc+='<strong style="color:#c9a96e">Como importar:</strong><br>';

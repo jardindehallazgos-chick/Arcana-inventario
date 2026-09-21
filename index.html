@@ -149,6 +149,21 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
   .inp{font-size:16px;padding:10px 12px} /* 16px prevents iOS zoom */
   .btn,.btna,.btnr,.btno{padding:9px 13px;font-size:13px}
   .btns{padding:7px 11px;font-size:12px}
+  /* Reportes: botones del encabezado en renglones, sin cortarse */
+  .rep-acciones{width:100%}
+  .rep-acciones .btn{flex:1 1 auto;white-space:nowrap}
+  /* Tablas de Reportes: cada fila se vuelve una tarjeta en celular */
+  .tbl-stack thead{display:none}
+  .tbl-stack,.tbl-stack tbody{display:block;width:100%}
+  .tbl-stack tr{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;padding:11px 13px;border-bottom:1px solid #2a2620}
+  .tbl-stack td{display:block;padding:0;border:none}
+  .tbl-stack tr td.full{flex-basis:100%;grid-column:1/-1}
+  .tbl-stack td[data-label]::before{content:attr(data-label);display:block;font-size:9.5px;color:#6b6358;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1px}
+  .tbl-stack tr:hover td{background:none}
+  /* Por proveedor: nombre y tipo arriba; cuatro cifras en una fila debajo */
+  .tbl-prov tr{display:grid;grid-template-columns:repeat(4,1fr);gap:6px 10px}
+  .tbl-prov td:nth-child(1){grid-column:1/4;font-size:14px}
+  .tbl-prov td:nth-child(2){grid-column:4/5;text-align:right}
 }
 @media(min-width:769px){
   .mob-only{display:none!important}
@@ -357,9 +372,9 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
   </div>
 
   <div id="tab-reportes" class="tab">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:15px">
       <div class="h2" style="margin:0">Reportes</div>
-      <div style="display:flex;gap:8px">
+      <div class="rep-acciones" style="display:flex;flex-wrap:wrap;gap:8px">
         <button class="btn btns" onclick="expProvPDF()">Exportar PDF por proveedor</button>
         <button class="btn btns" onclick="aLogo()">Subir logotipo</button>
         <button class="btn btns" onclick="cambiarPassAcceso()">Cambiar contrasena de acceso</button>
@@ -377,7 +392,7 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
         <option value="todos">Todos los proveedores</option>
       </select>
     </div>
-    <div class="box" style="margin:10px 0 22px"><div class="tw"><table class="tbl">
+    <div class="box" style="margin:10px 0 22px"><div class="tw"><table class="tbl tbl-stack tbl-prov">
       <thead><tr><th>Proveedor</th><th>Tipo</th><th>En tienda</th><th>Ingresos</th><th>Costo</th><th>Ganancia</th></tr></thead>
       <tbody id="rprov"></tbody>
     </table></div></div>
