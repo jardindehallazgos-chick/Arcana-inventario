@@ -151,31 +151,72 @@ function fromFB(fbVal){
   return null;
 }
 
+// Bandera de "cambios pendientes de sincronizar": se activa al guardar localmente,
+// y solo se apaga cuando Firebase CONFIRMA haber recibido ese guardado. Esto permite
+// detectar, incluso despues de recargar la pagina, si hay trabajo hecho que nunca
+// llego a la nube y esta en riesgo de perderse.
+function marcarPendiente(pendiente){
+  try{ localStorage.setItem("vntPendiente", pendiente?"1":"0"); }catch(e){}
+  mostrarAlertaSyncPendiente(pendiente);
+}
+function mostrarAlertaSyncPendiente(mostrar){
+  var el=ge("sync-pendiente-alerta");
+  if(!el) return;
+  el.style.display = mostrar ? "flex" : "none";
+  // Empujar el encabezado hacia abajo (en vez de que el banner lo tape) mientras
+  // la alerta este visible, para que siga siendo legible.
+  var hdr=ge("hdr");
+  if(hdr) hdr.style.marginTop = mostrar ? "38px" : "0";
+}
+
 function dbSave(){
   _itemIndex=null; _provIndex=null; // invalidar indices (datos cambiaron)
   isLocalChange = true; // Mark as local change to avoid echo
   try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+  marcarPendiente(true); // hay cambios locales que aun no se confirman en Firebase
   if(syncTimeout) clearTimeout(syncTimeout);
-  syncTimeout = setTimeout(function(){
-    fbStatus("Guardando...", "#c9a96e");
-    var body = JSON.stringify({fields:{
-      items: toFB(DB.items),
-      provs: toFB(DB.provs),
-      ventas: toFB(DB.ventas),
-      apartados: toFB(DB.apartados||[]),
-      saldos: toFB(DB.saldos||[]),
-      archivo: toFB(DB.archivo||[]),
-      config: toFB(DB.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}),
-      updated: toFB(new Date().toISOString())
-    }});
-    fetch(FB_BASE+"?key="+FB_API_KEY, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:body})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        if(d.error){ fbStatus("Sin conexion (local)", "#f59e0b"); console.log("FB save error:", d.error); }
-        else fbStatus("Sincronizado", "#4ade80");
-      })
-      .catch(function(e){ fbStatus("Sin conexion (local)", "#f59e0b"); });
-  }, 1500);
+  syncTimeout = setTimeout(function(){ intentarGuardarFB(0); }, 1500);
+}
+
+// Intenta guardar en Firebase, con reintentos automaticos si falla por conexion.
+// Hasta 5 intentos, con espera creciente (2s, 4s, 8s, 16s, 32s) para no saturar
+// una red inestable. Mientras no se confirme, la alerta de "sin sincronizar" permanece.
+function intentarGuardarFB(intento){
+  fbStatus(intento>0?("Reintentando guardar... ("+intento+")"):"Guardando...", "#c9a96e");
+  var body = JSON.stringify({fields:{
+    items: toFB(DB.items),
+    provs: toFB(DB.provs),
+    ventas: toFB(DB.ventas),
+    apartados: toFB(DB.apartados||[]),
+    saldos: toFB(DB.saldos||[]),
+    archivo: toFB(DB.archivo||[]),
+    config: toFB(DB.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}),
+    updated: toFB(new Date().toISOString())
+  }});
+  fetch(FB_BASE+"?key="+FB_API_KEY, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:body})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d.error){
+        console.log("FB save error:", d.error);
+        reintentarOAvisar(intento);
+      } else {
+        fbStatus("Sincronizado", "#4ade80");
+        marcarPendiente(false); // confirmado: ya no hay riesgo de perder este cambio
+      }
+    })
+    .catch(function(e){ reintentarOAvisar(intento); });
+}
+function reintentarOAvisar(intento){
+  if(intento<5){
+    var espera=Math.pow(2,intento+1)*1000; // 2s,4s,8s,16s,32s
+    fbStatus("Sin conexion, reintentando...", "#f59e0b");
+    setTimeout(function(){ intentarGuardarFB(intento+1); }, espera);
+  } else {
+    // Se agotaron los reintentos automaticos: dejar la alerta visible de forma
+    // persistente. El dato NO se pierde (sigue en localStorage), pero no se debe
+    // cerrar el navegador ni recargar hasta reconectar, o quedaria sin subir.
+    fbStatus("Sin conexion - cambios guardados solo en este equipo", "#f87171");
+  }
 }
 
 function dbLoad(){
@@ -186,6 +227,11 @@ function dbLoad(){
   }catch(e){ console.log("localStorage error:", e); }
   if(!DB.config) DB.config={accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""};
   applyConfig();
+  // Si esta computadora se cerro/recargo con cambios sin confirmar en una sesion
+  // anterior, mostrar la alerta desde ya (no esperar a que termine de cargar).
+  var pendienteInicial=false;
+  try{ pendienteInicial = localStorage.getItem("vntPendiente")==="1"; }catch(e){}
+  if(pendienteInicial) mostrarAlertaSyncPendiente(true);
   fbStatus("Conectando...", "#6b6358");
   console.log("FB_BASE:", FB_BASE);
   console.log("FB_API_KEY:", FB_API_KEY ? "present" : "missing");
@@ -224,13 +270,29 @@ function dbLoad(){
       if(doc.fields){
         var d = fromFB({mapValue:{fields:doc.fields}});
         if(d&&d.items&&d.provs){
-          DB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
-          _itemIndex=null; _provIndex=null;
-          detectarDuplicados(true); // red de seguridad: auto-reparar IDs duplicados
-          try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
-          RI(); PH(); applyConfig();
-          fbStatus("Conectado", "#4ade80");
-          startListener(); // Start real-time sync
+          // PROTECCION: si esta computadora tiene cambios locales que nunca se
+          // confirmaron en Firebase (por ejemplo, quedaron pendientes por una
+          // caida de conexion), NO se descartan al recargar. En vez de reemplazar
+          // DB con lo que viene de la nube, se conserva la copia local (que ya
+          // esta cargada en memoria desde el inicio de esta funcion) y se reintenta
+          // subirla de inmediato, para no perder ventas o cambios de inventario.
+          var hayPendiente=false;
+          try{ hayPendiente = localStorage.getItem("vntPendiente")==="1"; }catch(e){}
+          if(hayPendiente && DB && DB.items && DB.provs){
+            fbStatus("Cambios sin sincronizar detectados - reenviando...", "#f59e0b");
+            mostrarAlertaSyncPendiente(true);
+            RI(); PH(); applyConfig();
+            intentarGuardarFB(0); // reintentar subir la copia local, no la de la nube
+            startListener();
+          } else {
+            DB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
+            _itemIndex=null; _provIndex=null;
+            detectarDuplicados(true); // red de seguridad: auto-reparar IDs duplicados
+            try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+            RI(); PH(); applyConfig();
+            fbStatus("Conectado", "#4ade80");
+            startListener(); // Start real-time sync
+          }
         } else {
           fbStatus("Conectado (datos vacios)", "#c9a96e");
           dbSave();
@@ -247,8 +309,8 @@ function dbLoad(){
     });
 }
 
-var CATS = ["Vestido","Blusa","Pantalon","Falda","Saco/Blazer","Abrigo","Sueter","Chaleco","Traje","Lenceria","Zapatos","Bolso/Cartera","Accesorio","Joyeria","Objeto decorativo","Bebida","Alimentos","Otro"];
-var EPOCAS = ["1900s","1910s","1920s","1930s","1940s","1950s","1960s","1970s","1980s","1990s","2000s","2010s","2020s","Sin epoca definida"];
+var CATS = ["Vestido","Blusa","Camisa","Pantalon","Falda","Saco/Blazer","Abrigo","Sueter","Chaleco","Traje","Lenceria","Zapatos","Bolso/Cartera","Accesorio","Joyeria","Objeto decorativo","Bebida","Alimentos","Chamarra","Mascada","Arete","Collar","Anillo","Prendedor","Sombrero","Short","Cinturon","Corbata","Conjuntos","Otro"];
+var EPOCAS = ["1900s","1910s","1920s","1930s","1940s","1950s","1960s","1970s","1980s","1990s","2000s","2010s","2020s","Actual","Sin epoca definida"];
 var TALLAS = ["Xch","Ch","Ch/M","M","M/G","G","XG"];
 var ADMIN_PASS_DEFAULT = "arcana2024";
 var ACCESS_PASS_DEFAULT = "JDH1";
@@ -338,6 +400,89 @@ function fiscal(p,mpago){
   // Tarjeta: IVA + ISR + comision terminal
   var base=p/1.16,iva=p-base,isr=p*0.015,term=p*0.0406;
   return {base:base,iva:iva,isr:isr,term:term,neto:p-iva-isr-term};
+}
+// Calcula el fiscal correcto de una venta, incluso si su metodo de pago es "mixto".
+// Para "mixto", suma el fiscal de CADA abono por separado (cada uno con su propio
+// metodo real), en vez de aplicar un solo calculo sobre el total con un metodo
+// adivinado. Para el resto de los casos, es identico a fiscal(v.total, v.mpago).
+function fiscalVenta(v){
+  if(v.mpago==="mixto" && v.abonos && v.abonos.length){
+    var acc={base:0,iva:0,isr:0,term:0,neto:0};
+    for(var i=0;i<v.abonos.length;i++){
+      var ab=v.abonos[i];
+      var f=fiscal(ab.monto||0, ab.mpago||"efectivo");
+      acc.base+=f.base; acc.iva+=f.iva; acc.isr+=f.isr; acc.term+=f.term; acc.neto+=f.neto;
+    }
+    return acc;
+  }
+  return fiscal(v.total, v.mpago);
+}
+// ── AYUDANTES COMPARTIDOS ─────────────────────────────────────────────────────
+// Devuelve una copia de la lista de proveedores ordenada alfabeticamente por
+// nombre (respetando acentos y sin distinguir mayusculas). Se usa en TODOS los
+// menus de seleccion para que el orden sea siempre el mismo y predecible.
+function provsAlfabetico(lista){
+  var base=(lista&&lista.length!==undefined)?lista:DB.provs;
+  return (base||[]).slice().sort(function(a,b){
+    return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'});
+  });
+}
+// Igual que provsAlfabetico, pero con JDH SIEMPRE primero (proveedor propio de
+// la tienda y el mas consultado). Se usa en Reportes > Por proveedor, en el
+// filtro de proveedores de Inventario y en el selector de Importar datos.
+// Mismo criterio que el Excel INV-Mes para reconocer a JDH.
+function esJDH(p){ return String((p&&p.nombre)||"").trim().toUpperCase()==="JDH"; }
+function provsJDHPrimero(lista){
+  return provsAlfabetico(lista).sort(function(a,b){
+    var aJ=esJDH(a), bJ=esJDH(b);
+    if(aJ&&!bJ) return -1;
+    if(bJ&&!aJ) return 1;
+    return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'});
+  });
+}
+// Mapa itemId -> true de las piezas RESERVADAS en apartados activos o en
+// resguardo (es decir, sin liquidar). Estas piezas tienen cantidad 0 en el
+// inventario porque el apartado descuenta el stock al crearse, pero NO estan
+// vendidas: el cliente todavia no las paga por completo. Sin esta distincion
+// se confunden con las vendidas en los reportes.
+function itemsApartados(){
+  var m={};
+  for(var i=0;i<(DB.apartados||[]).length;i++){
+    var apa=DB.apartados[i];
+    if(apa.estado!=="activo" && apa.estado!=="resguardo") continue;
+    var pz=apa.piezas||[];
+    for(var j=0;j<pz.length;j++) if(pz[j].itemId) m[pz[j].itemId]=true;
+  }
+  return m;
+}
+// Proveedor, costo, clave y descripcion de una linea de venta. Usa SIEMPRE el
+// dato que la linea guardo al momento de vender; el inventario es solo respaldo
+// para ventas antiguas. Asi el reporte sigue siendo correcto aunque la pieza ya
+// se haya eliminado del inventario.
+function datosLineaVenta(l){
+  var it=getItem(l.itemId);
+  var provId=l.proveedorId;
+  if(provId===undefined||provId===null) provId=it?it.proveedorId:null;
+  var costo=l.costoProveedor;
+  if(costo===undefined||costo===null) costo=it?(it.costoProveedor||0):0;
+  return {
+    provId:provId, costo:costo||0,
+    sku: it?it.sku:(l.sku||l.itemId),
+    desc: it?it.descripcion:(l.descripcion||"")
+  };
+}
+// Precio realmente cobrado por unidad en una linea, prorrateando el descuento
+// global de la venta segun el peso de la linea en el subtotal. Misma logica que
+// cancelarVenta y el reporte general, para que ningun reporte muestre el precio
+// de lista cuando se cobro con descuento.
+function precioEfectivoLinea(v,l){
+  var desc=v.descuento||0;
+  if(!(desc>0)) return l.precio;
+  var sub=0;
+  for(var k=0;k<v.lineas.length;k++) sub+=v.lineas[k].precio*v.lineas[k].cantidad;
+  if(!(sub>0)) return l.precio;
+  var subLinea=l.precio*l.cantidad;
+  return Math.max(0,(subLinea-desc*(subLinea/sub))/l.cantidad);
 }
 function ganancia(item,mpago){ return fiscal(item.precioVenta||0,mpago).neto-(item.costoProveedor||0); }
 function costoNeto(it){
@@ -529,14 +674,16 @@ function initF(){
     for(var i=0;i<TALLAS.length;i++) ht+='<option value="'+esc(TALLAS[i])+'"'+(vtl===TALLAS[i]?" selected":"")+'>'+esc(TALLAS[i])+'</option>';
     ftl.innerHTML=ht;
   }
+  var catsOrd=CATS.slice().sort(function(a,b){ return a.localeCompare(b,'es',{sensitivity:'base'}); });
   var h='<option value="">Todas las categorias</option>';
-  for(var i=0;i<CATS.length;i++) h+='<option value="'+esc(CATS[i])+'"'+(vc===CATS[i]?" selected":"")+'>'+esc(CATS[i])+'</option>';
+  for(var i=0;i<catsOrd.length;i++) h+='<option value="'+esc(catsOrd[i])+'"'+(vc===catsOrd[i]?" selected":"")+'>'+esc(catsOrd[i])+'</option>';
   fc.innerHTML=h;
   h='<option value="">Todas las epocas</option>';
   for(var i=0;i<EPOCAS.length;i++) h+='<option value="'+esc(EPOCAS[i])+'"'+(ve===EPOCAS[i]?" selected":"")+'>'+esc(EPOCAS[i])+'</option>';
   fe.innerHTML=h;
+  var provsOrdF=provsJDHPrimero();
   h='<option value="">Todos los proveedores</option>';
-  for(var i=0;i<DB.provs.length;i++) h+='<option value="'+DB.provs[i].id+'"'+(vp===DB.provs[i].id?" selected":"")+'>'+esc(DB.provs[i].nombre)+'</option>';
+  for(var i=0;i<provsOrdF.length;i++) h+='<option value="'+provsOrdF[i].id+'"'+(vp===provsOrdF[i].id?" selected":"")+'>'+esc(provsOrdF[i].nombre)+'</option>';
   fp.innerHTML=h;
 }
 
@@ -560,8 +707,30 @@ function RI(){
     var mtl=!ftl||String(it.talla||"")===ftl;
     if(mq&&mcat&&mep&&mtl&&(!fpv||it.proveedorId===fpv)&&ms) list.push(it);
   }
+  // VISTA INICIAL: sin ningun filtro ni busqueda, se dibujan solo los 50
+  // conceptos mas recientes por fecha de ingreso. Con mas de 2000 piezas,
+  // dibujarlas todas tomaba medio segundo cada vez (y el buscador redibuja con
+  // cada tecla). Los filtros y el buscador SIEMPRE revisan el inventario
+  // completo, y cuando hay un filtro activo se muestran todas las coincidencias
+  // sin limite.
+  var hayFiltro = !!(q||fc||fe||ftl||fpv||fs);
+  if(hayFiltro) window._invVerTodo=false; // al filtrar se olvida el "Ver todos"
+  var limitada=false;
+  if(!hayFiltro && !window._invVerTodo && list.length>INV_VISTA_INICIAL){
+    list=list.slice().sort(function(a,b){
+      return String(b.fechaIngreso||"").localeCompare(String(a.fechaIngreso||""));
+    }).slice(0,INV_VISTA_INICIAL);
+    limitada=true;
+  }
   var pz=0; for(var i=0;i<list.length;i++) pz+=list[i].cantidad||0;
-  ge("ic").textContent=list.length+" de "+DB.items.length+" conceptos - "+pz+" piezas";
+  if(limitada){
+    var pzTot=0; for(var i=0;i<DB.items.length;i++) pzTot+=DB.items[i].cantidad||0;
+    ge("ic").innerHTML='Mostrando los '+INV_VISTA_INICIAL+' conceptos mas recientes de '+DB.items.length+
+      ' &middot; '+pzTot+' piezas en inventario &middot; usa el buscador o los filtros para encontrar el resto. '+
+      '<span onclick="invVerTodo()" style="color:#c9a96e;cursor:pointer;text-decoration:underline">Ver todos</span>';
+  } else {
+    ge("ic").textContent=list.length+" de "+DB.items.length+" conceptos - "+pz+" piezas";
+  }
   var tb=ge("itb");
   if(!list.length){ tb.innerHTML='<tr><td colspan="13" style="padding:36px;text-align:center;color:#4a4540">Sin resultados</td></tr>'; return; }
   var h="";
@@ -579,14 +748,24 @@ function RI(){
     h+='<td class="mut sm">'+fmt(it.costoProveedor)+'</td>';
     h+='<td class="'+(g>=0?"gp":"gn")+' sm">'+fmt(g)+'</td>';
     h+='<td class="gold">'+fmt(it.precioVenta)+'</td>';
-    h+='<td class="mut sm">'+(it.fechaIngreso||"")+'</td>';
+    h+='<td class="mut sm">'+mesAnioAbrev(it.fechaIngreso)+'</td>';
     h+='<td style="white-space:nowrap"><button class="btn btns" onclick="aDet(\''+it.id+'\')">Ver</button> <button class="btn btns" onclick="aItem(\''+it.id+'\')">Editar</button> <button class="btn btns" onclick="eFromInv(\''+it.id+'\')">Etiq</button></td>';
     h+='</tr>';
   }
   tb.innerHTML=h;
-  // Render mobile cards
-  renderMobCards(list);
+  // Las tarjetas de la vista movil estan ocultas por CSS en computadora, pero
+  // antes se armaban igual: era la mitad del tiempo de dibujado, desperdiciada.
+  // Ahora solo se arman cuando la pantalla realmente las usa.
+  if(esVistaMovil()) renderMobCards(list);
+  else { var mc=ge("inv-cards"); if(mc && mc.innerHTML) mc.innerHTML=""; }
 }
+// Cuantos conceptos se muestran al entrar a Inventario sin filtros.
+var INV_VISTA_INICIAL=50;
+function esVistaMovil(){
+  try{ return window.matchMedia("(max-width:768px)").matches; }catch(e){ return false; }
+}
+// Quita el limite de la vista inicial hasta que se aplique algun filtro.
+function invVerTodo(){ window._invVerTodo=true; RI(); }
 
 function renderMobCards(list){
   var el=ge("inv-cards"); if(!el) return;
@@ -658,17 +837,33 @@ function delSel(){
   var chks=document.querySelectorAll(".item-chk"),ids=[];
   for(var i=0;i<chks.length;i++) if(chks[i].checked) ids.push(chks[i].getAttribute("data-id"));
   if(!ids.length) return;
-  if(!confirm("Eliminar "+ids.length+" prenda"+(ids.length>1?"s":"")+"?")) return;
   var idSet={}; for(var i=0;i<ids.length;i++) idSet[ids[i]]=true;
+  // Misma advertencia que delItem: avisar si alguna de las seleccionadas esta
+  // reservada en un apartado activo o en resguardo antes de eliminar en bloque.
+  var clientesAfectados={};
+  for(var i=0;i<DB.apartados.length;i++){
+    var apa=DB.apartados[i];
+    if(apa.estado!=="activo" && apa.estado!=="resguardo") continue;
+    var tocaAlguna=(apa.piezas||[]).some(function(pz){ return idSet[pz.itemId]; });
+    if(tocaAlguna) clientesAfectados[apa.clienteNombre||"(sin nombre)"]=true;
+  }
+  var nombresAfectados=Object.keys(clientesAfectados);
+  var msg="Eliminar "+ids.length+" prenda"+(ids.length>1?"s":"")+"?";
+  if(nombresAfectados.length){
+    msg="ADVERTENCIA: entre las prendas seleccionadas hay al menos una reservada en un apartado activo o en resguardo, sin liquidar por completo (cliente"+(nombresAfectados.length>1?"s":"")+": "+nombresAfectados.join(", ")+").\n\nSi las eliminas ahora, cuando esos apartados se liquiden o abonen, esas ventas quedaran sin proveedor ni costo asignado, y tendras que corregirlo a mano despues.\n\nEliminar de todas formas?";
+  }
+  if(!confirm(msg)) return;
   DB.items=DB.items.filter(function(it){ return !idSet[it.id]; });
   dbSave(); RI(); var btn=ge("btn-del-sel"); if(btn) btn.style.display="none";
 }
 
 function aItem(id){
   var it=id?getItem(id):null;
-  var co='<option value="">-</option>'; for(var i=0;i<CATS.length;i++) co+='<option'+(it&&it.categoria===CATS[i]?" selected":"")+'>'+esc(CATS[i])+'</option>';
+  var catsOrdF=CATS.slice().sort(function(a,b){ return a.localeCompare(b,'es',{sensitivity:'base'}); });
+  var co='<option value="">-</option>'; for(var i=0;i<catsOrdF.length;i++) co+='<option'+(it&&it.categoria===catsOrdF[i]?" selected":"")+'>'+esc(catsOrdF[i])+'</option>';
   var eo='<option value="">-</option>'; for(var i=0;i<EPOCAS.length;i++) eo+='<option'+(it&&it.epoca===EPOCAS[i]?" selected":"")+'>'+esc(EPOCAS[i])+'</option>';
-  var po='<option value="">-- Selecciona un proveedor --</option>'; for(var i=0;i<DB.provs.length;i++) po+='<option value="'+DB.provs[i].id+'"'+(it&&it.proveedorId===DB.provs[i].id?" selected":"")+'>'+esc(DB.provs[i].nombre)+'</option>';
+  var provsOrdF2=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
+  var po='<option value="">-- Selecciona un proveedor --</option>'; for(var i=0;i<provsOrdF2.length;i++) po+='<option value="'+provsOrdF2[i].id+'"'+(it&&it.proveedorId===provsOrdF2[i].id?" selected":"")+'>'+esc(provsOrdF2[i].nombre)+'</option>';
   var h='<div class="g2"><div class="fld"><label class="lbl" id="slbl">Clave/SKU</label><input class="inp" id="fsk" value="'+esc(it?it.sku:"")+'"/></div>';
   h+='<div class="fld"><label class="lbl">Cantidad</label><input class="inp" type="number" min="0" id="fca" value="'+(it?it.cantidad:1)+'"/></div></div>';
   h+='<div class="fld"><label class="lbl">Descripcion</label><textarea class="inp" id="fde" rows="2">'+esc(it?it.descripcion:"")+'</textarea></div>';
@@ -714,11 +909,30 @@ function saveItem(id){
   else{ d.id=uid(); d.cantidadInicial=cant; DB.items.unshift(d); }
   dbSave(); CM(); RI();
 }
-function delItem(id){ if(!confirm("Eliminar esta prenda?")) return; DB.items=DB.items.filter(function(i){ return i.id!==id; }); dbSave(); CM(); RI(); }
+function delItem(id){
+  // Advertir si la pieza esta reservada en un apartado activo o en resguardo,
+  // aunque su cantidad ya este en 0. Eliminarla en ese estado deja huerfana la
+  // referencia dentro del apartado (proveedor y costo se pierden al liquidar despues).
+  var apaRelacionados=[];
+  for(var i=0;i<DB.apartados.length;i++){
+    var apa=DB.apartados[i];
+    if(apa.estado!=="activo" && apa.estado!=="resguardo") continue;
+    var tienePieza=(apa.piezas||[]).some(function(pz){ return pz.itemId===id; });
+    if(tienePieza) apaRelacionados.push(apa.clienteNombre||"(sin nombre)");
+  }
+  var msg="Eliminar esta prenda?";
+  if(apaRelacionados.length){
+    msg="ADVERTENCIA: esta prenda esta reservada en un apartado "+
+      (apaRelacionados.length>1?("de "+apaRelacionados.length+" clientes: "+apaRelacionados.join(", ")):("de "+apaRelacionados[0]))+
+      " que aun no se liquida por completo.\n\nSi la eliminas ahora, cuando ese apartado se liquide o abone, la venta quedara sin proveedor ni costo asignado, y tendras que corregirlo a mano despues.\n\nEliminar de todas formas?";
+  }
+  if(!confirm(msg)) return;
+  DB.items=DB.items.filter(function(i){ return i.id!==id; }); dbSave(); CM(); RI();
+}
 function aDet(id){
   var it=getItem(id); if(!it) return;
   var pv=getProv(it.proveedorId), f=fiscal(it.precioVenta||0), g=f.neto-(it.costoProveedor||0);
-  var rows=[["Clave",it.sku],["Categoria",it.categoria||""],["Epoca",it.epoca||""],["Cantidad",it.cantidad],["Proveedor",pv?pv.nombre:""],["Tipo",pv?(pv.tipo==="consignacion"?"Consignacion":"Compra directa"):""],["Fecha ingreso",it.fechaIngreso||""]];
+  var rows=[["Clave",it.sku],["Categoria",it.categoria||""],["Epoca",it.epoca||""],["Cantidad",it.cantidad],["Proveedor",pv?pv.nombre:""],["Tipo",pv?(pv.tipo==="consignacion"?"Consignacion":"Compra directa"):""],["Fecha ingreso",mesAnioAbrev(it.fechaIngreso)]];
   var h='<p class="mut it" style="font-size:14px;margin-bottom:14px">'+esc(it.descripcion)+'</p><div class="g2" style="gap:7px 18px;margin-bottom:13px">';
   for(var i=0;i<rows.length;i++) h+='<div style="border-bottom:1px solid #1e1c18;padding-bottom:4px"><div class="lbl">'+rows[i][0]+'</div><div style="font-size:13px">'+rows[i][1]+'</div></div>';
   h+='</div><div class="fb"><div class="sm" style="color:#6b6358;text-transform:uppercase;margin-bottom:5px">Desglose de '+fmt(it.precioVenta)+'</div>'+
@@ -793,6 +1007,17 @@ function calcC(){
 }
 function cobrar(){
   if(!carrito.length) return;
+  // VALIDACION FINAL DE EXISTENCIA: confirmar que aun hay suficiente inventario real
+  // justo antes de registrar la venta. El carrito pudo haberse armado hace rato o en
+  // otro dispositivo, y la existencia pudo cambiar mientras tanto. Sin esta verificacion
+  // se podria vender mas piezas de las que realmente existen.
+  for(var i=0;i<carrito.length;i++){
+    var itChk=getItem(carrito[i].id);
+    if(!itChk || (itChk.cantidad||0)<carrito[i].cant){
+      alert("Ya no hay existencia suficiente de \""+(itChk?itChk.sku:carrito[i].id)+"\". Disponible: "+(itChk?(itChk.cantidad||0):0)+". Ajusta el carrito antes de cobrar.");
+      return;
+    }
+  }
   var lineas=[]; for(var i=0;i<carrito.length;i++){
     var itC=carrito[i].item||getItem(carrito[i].id);
     lineas.push({itemId:carrito[i].id,cantidad:carrito[i].cant,precio:carrito[i].precio,
@@ -806,16 +1031,18 @@ function cobrar(){
   var descMonto;
   if(descTipo2==="pct"){ if(descVal2>100) descVal2=100; descMonto=sub2*(descVal2/100); }
   else { if(descVal2>sub2) descVal2=sub2; descMonto=descVal2; }
-  RV(lineas,mpago,descMonto); carrito=[];
+  var notaVenta=((ge("cnota")||{}).value||"").trim().slice(0,50);
+  RV(lineas,mpago,descMonto,notaVenta); carrito=[];
   if(ge("cdesc")) ge("cdesc").value="0";
   if(ge("cdesc-tipo")) ge("cdesc-tipo").value="monto";
+  if(ge("cnota")) ge("cnota").value="";
   RC(); PH();
   var s=ge("pok"); s.style.display="block"; setTimeout(function(){ s.style.display="none"; },2500);
 }
 function PH(){
   var tb=ge("ph");
-  var pagoColor={"efectivo":"#4ade80","tarjeta":"#818cf8","transferencia":"#f59e0b"};
-  var pagoLabel={"efectivo":"Efectivo","tarjeta":"Tarjeta","transferencia":"Transferencia"};
+  var pagoColor={"efectivo":"#4ade80","tarjeta":"#818cf8","transferencia":"#f59e0b","mixto":"#c9a96e"};
+  var pagoLabel={"efectivo":"Efectivo","tarjeta":"Tarjeta","transferencia":"Transferencia","mixto":"Mixto"};
   var diaHoy=diaComercial();
   // Solo ventas del dia comercial en curso, sin limite
   var ventasHoy=DB.ventas.filter(function(v){ return v.fecha===diaHoy; });
@@ -840,6 +1067,13 @@ function PH(){
       detalle+='<span style="color:'+(l.cancelada?"#6b6358":"#4ade80")+';margin-left:4px">'+fmt(l.precio*l.cantidad)+'</span>';
       detalle+=cancelBtn+'</div>';
     }
+    if(!v.cancelacion){
+      if(v.notas && v.notas.trim()){
+        detalle+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8;display:flex;align-items:center;justify-content:space-between;gap:6px"><span><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</span><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;white-space:nowrap;font-size:10px">Editar</span></div>';
+      } else {
+        detalle+='<div style="margin-top:4px"><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;font-size:10px">+ Agregar nota</span></div>';
+      }
+    }
     h+='<tr style="background:'+rowBg+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td>';
     h+='<td><span style="color:'+(pagoColor[mp]||"#a09480")+';font-size:12px">'+(pagoLabel[mp]||mp)+'</span></td>';
     h+='<td style="white-space:nowrap">'+totalDisplay+'</td><td>'+detalle+'</td></tr>';
@@ -848,12 +1082,33 @@ function PH(){
   RCorte();
   revisarAlertaApa();
 }
-function RV(lineas,mpago,descuento){
+function RV(lineas,mpago,descuento,notas){
   var total=0; for(var i=0;i<lineas.length;i++) total+=lineas[i].precio*lineas[i].cantidad;
   total=Math.max(0,total-(descuento||0));
-  DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0});
+  DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0,notas:notas||""});
   for(var i=0;i<DB.items.length;i++) for(var j=0;j<lineas.length;j++) if(DB.items[i].id===lineas[j].itemId) DB.items[i].cantidad=Math.max(0,(DB.items[i].cantidad||0)-lineas[j].cantidad);
   dbSave();
+}
+// Permite agregar o editar la nota de CUALQUIER venta ya registrada, tenga o no
+// nota previa, desde Ventas de hoy o desde el historial de Reportes.
+function editarNotaVenta(vid){
+  var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
+  if(!v) return;
+  var h='<div class="fld"><label class="lbl">Nota de la venta (maximo 50 caracteres)</label>';
+  h+='<input type="text" class="inp" id="edn-txt" maxlength="50" value="'+esc(v.notas||"")+'" placeholder="Ej. cliente frecuente, pago en 2 partes..."/></div>';
+  h+='<div style="display:flex;justify-content:space-between;padding-top:8px">';
+  h+='<button class="btn" onclick="CM()">Cancelar</button>';
+  h+='<button class="btna" onclick="guardarNotaVenta(\''+vid+'\')">Guardar nota</button>';
+  h+='</div>';
+  OM("Editar nota de venta", h);
+}
+function guardarNotaVenta(vid){
+  var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
+  if(!v) return;
+  var txt=((ge("edn-txt")||{}).value||"").trim().slice(0,50);
+  v.notas=txt;
+  dbSave(); CM(); PH();
+  var tr=ge("tab-reportes"); if(tr&&tr.classList.contains("on")) RMeses();
 }
 function cancelarVenta(vid,lidx){
   var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
@@ -890,16 +1145,21 @@ function cancelarVenta(vid,lidx){
 
 // ── PROVEEDORES ────────────────────────────────────────────────────────────────
 function RP(){
-  var h=""; for(var i=0;i<DB.provs.length;i++){
-    var p=DB.provs[i],enT=0,ingr=0,cost=0;
+  var provsOrdenados=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
+  var h=""; for(var i=0;i<provsOrdenados.length;i++){
+    var p=provsOrdenados[i],enT=0,ingr=0,cost=0;
     for(var j=0;j<DB.items.length;j++) if(DB.items[j].proveedorId===p.id) enT+=DB.items[j].cantidad||0;
     for(var j=0;j<DB.ventas.length;j++){
       var vpj=DB.ventas[j];
       if(vpj.cancelacion) continue;
       for(var k=0;k<vpj.lineas.length;k++){
-        var l=vpj.lineas[k],it=getItem(l.itemId);
+        var l=vpj.lineas[k];
         if(l.cancelada) continue;
-        if(it&&it.proveedorId===p.id){ingr+=l.precio*l.cantidad;cost+=(it.costoProveedor||0)*l.cantidad;}
+        // Proveedor y costo desde la linea (no desde el inventario, que pudo
+        // borrarse). El INGRESO usa el precio realmente cobrado; el COSTO del
+        // proveedor es siempre el acordado, el descuento no lo toca.
+        var dp=datosLineaVenta(l);
+        if(dp.provId===p.id){ ingr+=precioEfectivoLinea(vpj,l)*l.cantidad; cost+=dp.costo*l.cantidad; }
       }
     }
     h+='<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:9px">';
@@ -979,11 +1239,11 @@ function limpiarCerosTodos(){
   var detalle=""; for(var nom in porProv) detalle+="\n  \u2022 "+nom+": "+porProv[nom]+" pieza(s)";
   var msg="Eliminar "+aEliminar.length+" pieza(s) vendidas (cantidad 0) de TODOS los proveedores?"+detalle;
   if(protegidas>0) msg+="\n\n"+protegidas+" pieza(s) en cero quedan protegidas por apartados activos y NO se eliminaran.";
-  msg+="\n\nAsegurate de haber descargado el CSV del mes antes de continuar.";
   if(!confirm(msg)) return;
   var ids={}; for(var i=0;i<aEliminar.length;i++) ids[aEliminar[i].id]=true;
   DB.items=DB.items.filter(function(it){ return !ids[it.id]; });
   dbSave(); RI(); RP();
+  var chk=ge("checklist-cierre"); if(chk) RChecklist();
   alert("Eliminadas "+aEliminar.length+" pieza(s) vendidas de "+Object.keys(porProv).length+" proveedor(es)."+(protegidas>0?"\n"+protegidas+" pieza(s) apartadas quedaron protegidas.":""));
 }
 
@@ -1025,14 +1285,14 @@ function RCorte(){
   var fechaSel=diaComercial();
   var el=ge("corte-body"); if(!el) return;
   // Aggregate sales for the selected day by payment method
-  var acc={efectivo:{n:0,monto:0},tarjeta:{n:0,monto:0},transferencia:{n:0,monto:0}};
+  var acc={efectivo:{n:0,nAb:0,monto:0},tarjeta:{n:0,nAb:0,monto:0},transferencia:{n:0,nAb:0,monto:0}};
   var devol={efectivo:0,tarjeta:0,transferencia:0};
-  var totalDia=0, piezasDia=0, ventasDia=0, devolDia=0, anticiposDia=0;
+  var totalDia=0, piezasDia=0, ventasDia=0, devolDia=0, anticiposDia=0, apartadosLiqDia=0;
   for(var i=0;i<DB.ventas.length;i++){
     var v=DB.ventas[i];
     if(v.fecha!==fechaSel) continue;
     var mp=v.mpago||"efectivo";
-    if(!acc[mp]) acc[mp]={n:0,monto:0};
+    if(!acc[mp]) acc[mp]={n:0,nAb:0,monto:0};
     if(v.cancelacion){
       devol[mp]=(devol[mp]||0)+Math.abs(v.total);
       devolDia+=Math.abs(v.total);
@@ -1040,7 +1300,10 @@ function RCorte(){
     } else if(v.esApartado){
       // Liquidated layaway: the money was collected via abonos on their own days,
       // NOT counted as cash-in on liquidation day. Count only the piece as sold.
-      ventasDia++;
+      // Se cuenta aparte de las ventas de mostrador: el dinero de este apartado
+      // entro en los dias de sus abonos, no hoy. Por eso la leyenda del corte
+      // dice "N apartados liquidados" en vez de sumarlos como ventas del dia.
+      apartadosLiqDia++;
       for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezasDia+=v.lineas[j].cantidad;
     } else {
       acc[mp].n++;
@@ -1058,171 +1321,98 @@ function RCorte(){
       var ab=apa.abonos[j];
       if(ab.fecha!==fechaSel) continue;
       var mpa=ab.mpago||"efectivo";
-      if(!acc[mpa]) acc[mpa]={n:0,monto:0};
+      if(!acc[mpa]) acc[mpa]={n:0,nAb:0,monto:0};
+      acc[mpa].nAb++;
       acc[mpa].monto+=ab.monto||0;
       totalDia+=ab.monto||0;
       anticiposDia+=ab.monto||0;
     }
   }
-  var pagoLabel={efectivo:"Efectivo",tarjeta:"Tarjeta",transferencia:"Transferencia"};
-  var pagoColor={efectivo:"#4ade80",tarjeta:"#818cf8",transferencia:"#f59e0b"};
+  var pagoLabel={efectivo:"Efectivo",tarjeta:"Tarjeta",transferencia:"Transferencia",mixto:"Mixto"};
+  var pagoColor={efectivo:"#4ade80",tarjeta:"#818cf8",transferencia:"#f59e0b",mixto:"#c9a96e"};
   var order=["efectivo","tarjeta","transferencia"];
   var h='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px;margin-bottom:14px">';
   for(var i=0;i<order.length;i++){
-    var mp=order[i], a=acc[mp]||{n:0,monto:0}, d=devol[mp]||0;
+    var mp=order[i], a=acc[mp]||{n:0,nAb:0,monto:0}, d=devol[mp]||0;
     var neto=a.monto-d;
     h+='<div style="background:#0f0e0c;border:1px solid #2a2620;border-radius:9px;padding:12px">';
     h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:'+pagoColor[mp]+';display:inline-block"></span><span class="kl" style="margin:0">'+pagoLabel[mp]+'</span></div>';
     h+='<div style="font-size:20px;font-weight:700;color:'+pagoColor[mp]+'">'+fmt(neto)+'</div>';
-    h+='<div class="sm mut" style="margin-top:3px">'+a.n+' venta'+(a.n===1?"":"s");
+    // La leyenda describe DE DONDE vino el dinero de esta tarjeta. Antes solo
+    // decia "N ventas" y contaba mostrador, asi que un dia en el que todo el
+    // dinero entro por abonos de apartado mostraba el monto con "0 ventas".
+    var partes=[];
+    if(a.n>0) partes.push(a.n+' venta'+(a.n===1?"":"s"));
+    if(a.nAb>0) partes.push(a.nAb+' abono'+(a.nAb===1?"":"s")+' de apartado');
+    if(!partes.length) partes.push('0 ventas');
+    h+='<div class="sm mut" style="margin-top:3px">'+partes.join(' &middot; ');
     if(d>0) h+=' &middot; <span style="color:#f87171">-'+fmt(d)+' dev.</span>';
     h+='</div></div>';
   }
   h+='</div>';
   // Grand total
   h+='<div style="display:flex;justify-content:space-between;align-items:center;background:#141210;border:1px solid #c9a96e44;border-radius:10px;padding:14px 17px">';
-  h+='<div><div class="kl">Total recaudado el dia</div><div class="sm mut">'+ventasDia+' venta'+(ventasDia===1?"":"s")+' &middot; '+piezasDia+' pieza'+(piezasDia===1?"":"s");
+  var resumen=[];
+  if(ventasDia>0) resumen.push(ventasDia+' venta'+(ventasDia===1?"":"s")+' de mostrador');
+  if(apartadosLiqDia>0) resumen.push(apartadosLiqDia+' apartado'+(apartadosLiqDia===1?"":"s")+' liquidado'+(apartadosLiqDia===1?"":"s"));
+  if(!resumen.length) resumen.push('0 ventas');
+  resumen.push(piezasDia+' pieza'+(piezasDia===1?"":"s"));
+  h+='<div><div class="kl">Total recaudado el dia</div><div class="sm mut">'+resumen.join(' &middot; ');
   if(anticiposDia>0) h+=' &middot; <span style="color:#f59e0b">incluye '+fmt(anticiposDia)+' en anticipos de apartados</span>';
   if(devolDia>0) h+=' &middot; <span style="color:#f87171">'+fmt(devolDia)+' en devoluciones</span>';
   h+='</div></div>';
   h+='<div style="font-size:26px;font-weight:800;color:#c9a96e">'+fmt(totalDia)+'</div>';
   h+='</div>';
-  if(ventasDia===0&&devolDia===0&&anticiposDia===0){
+  if(ventasDia===0&&devolDia===0&&anticiposDia===0&&apartadosLiqDia===0){
     h='<div style="text-align:center;padding:26px;color:#4a4540">Sin ventas registradas el '+fechaSel+'</div>';
   }
   el.innerHTML=h;
 }
-function imprimirCorte(){
-  var fechaSel=diaComercial();
-  var acc={efectivo:{n:0,monto:0},tarjeta:{n:0,monto:0},transferencia:{n:0,monto:0}};
-  var devol={efectivo:0,tarjeta:0,transferencia:0};
-  var totalDia=0, piezasDia=0, ventasDia=0;
-  var detalle=[];
-  for(var i=0;i<DB.ventas.length;i++){
-    var v=DB.ventas[i];
-    if(v.fecha!==fechaSel) continue;
-    var mp=v.mpago||"efectivo";
-    if(!acc[mp]) acc[mp]={n:0,monto:0};
-    if(v.cancelacion){ devol[mp]=(devol[mp]||0)+Math.abs(v.total); totalDia+=v.total; }
-    else{
-      acc[mp].n++; acc[mp].monto+=v.total; totalDia+=v.total; ventasDia++;
-      for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada){
-        piezasDia+=v.lineas[j].cantidad;
-        var itd=getItem(v.lineas[j].itemId);
-        detalle.push({sku:itd?itd.sku:"?",desc:itd?itd.descripcion:"",cant:v.lineas[j].cantidad,precio:v.lineas[j].precio*v.lineas[j].cantidad,mp:mp});
-      }
-    }
-  }
-  var pagoLabel={efectivo:"Efectivo",tarjeta:"Tarjeta",transferencia:"Transferencia"};
-  var order=["efectivo","tarjeta","transferencia"];
-  var css='body{font-family:Arial,sans-serif;font-size:13px;color:#111;margin:22px;max-width:520px}h1{font-size:19px;margin-bottom:2px}';
-  css+='.sub{color:#666;font-size:12px;margin-bottom:16px}table{width:100%;border-collapse:collapse;margin:10px 0}';
-  css+='th{text-align:left;padding:6px 8px;background:#f5f0e8;border:1px solid #ddd;font-size:11px}td{padding:5px 8px;border:1px solid #eee}';
-  css+='.tot{font-size:22px;font-weight:800;color:#5a3e10;margin-top:8px}.mp{font-weight:700;margin-top:14px;color:#5a3e10}';
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
-  doc+='<h1>Corte de caja - Arcana Vintage</h1>';
-  doc+='<div class="sub">Fecha: '+fechaSel+' &middot; Generado: '+hoy()+'</div>';
-  doc+='<table><thead><tr><th>Metodo de pago</th><th>Ventas</th><th>Devoluciones</th><th>Neto</th></tr></thead><tbody>';
-  for(var i=0;i<order.length;i++){
-    var mp=order[i], a=acc[mp]||{n:0,monto:0}, d=devol[mp]||0;
-    doc+='<tr><td>'+pagoLabel[mp]+'</td><td>'+a.n+'</td><td>'+(d>0?"-$"+Math.round(d):"-")+'</td><td><b>$'+Math.round(a.monto-d)+'</b></td></tr>';
-  }
-  doc+='</tbody></table>';
-  doc+='<div class="tot">Total del dia: $'+Math.round(totalDia)+'</div>';
-  doc+='<div class="sub">'+ventasDia+' ventas &middot; '+piezasDia+' piezas</div>';
-  if(detalle.length){
-    doc+='<div class="mp">Detalle de prendas vendidas</div>';
-    doc+='<table><thead><tr><th>Clave</th><th>Descripcion</th><th>Cant.</th><th>Pago</th><th>Total</th></tr></thead><tbody>';
-    for(var i=0;i<detalle.length;i++){
-      var dd=detalle[i];
-      doc+='<tr><td>'+esc(dd.sku)+'</td><td>'+esc(dd.desc)+'</td><td>'+dd.cant+'</td><td>'+pagoLabel[dd.mp]+'</td><td>$'+Math.round(dd.precio)+'</td></tr>';
-    }
-    doc+='</tbody></table>';
-  }
-  doc+='<\/body><\/html>';
-  var w=window.open("","_blank","width=600,height=700");
-  if(!w){alert("Permite ventanas emergentes para imprimir");return;}
-  w.document.write(doc); w.document.close();
-  w.onload=function(){ setTimeout(function(){ w.print(); },250); };
-}
 function RR(){
-  var pz=0,vInv=0,ingr=0,cost=0;
-  var accIva=0,accIsr=0,accTerm=0;
+  var pz=0,vInv=0;
   for(var i=0;i<DB.items.length;i++){pz+=DB.items[i].cantidad||0;vInv+=(DB.items[i].precioVenta||0)*(DB.items[i].cantidad||0);}
-  for(var i=0;i<DB.ventas.length;i++){
-    var vi=DB.ventas[i];
-    var mpv=vi.mpago||"efectivo";
-    if(vi.cancelacion){
-      ingr+=vi.total; // negative
-      var fc=fiscal(Math.abs(vi.total),mpv);
-      accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
-    } else if(vi.esApartado){
-      for(var j=0;j<vi.lineas.length;j++){
-        var l=vi.lineas[j]; if(l.cancelada) continue;
-        var provIdL=l.proveedorId, costoPL=l.costoProveedor;
-        if(provIdL===undefined){ var itFb=getItem(l.itemId); provIdL=itFb?itFb.proveedorId:null; costoPL=itFb?(itFb.costoProveedor||0):0; }
-        if(provIdL){ var pvL=getProv(provIdL); if(pvL&&pvL.tipo==="consignacion") cost+=(costoPL||0)*l.cantidad; }
-      }
-    } else {
-      ingr+=vi.total;
-      var fv=fiscal(vi.total,mpv);
-      accIva+=fv.iva; accIsr+=fv.isr; accTerm+=fv.term;
-      for(var j=0;j<vi.lineas.length;j++){
-        var l=vi.lineas[j]; if(l.cancelada) continue;
-        var provIdL2=l.proveedorId, costoPL2=l.costoProveedor;
-        if(provIdL2===undefined){ var itFb2=getItem(l.itemId); provIdL2=itFb2?itFb2.proveedorId:null; costoPL2=itFb2?(itFb2.costoProveedor||0):0; }
-        if(provIdL2){ var pvL2=getProv(provIdL2); if(pvL2&&pvL2.tipo==="consignacion") cost+=(costoPL2||0)*l.cantidad; }
-      }
-    }
-  }
-  // Ingreso por abonos: cada abono recibido cuenta como ingreso (dinero real en caja),
-  // de cualquier apartado excepto cancelados (esos van a saldo a favor, no a ingreso).
-  for(var i=0;i<DB.apartados.length;i++){
-    var apa=DB.apartados[i];
-    if(apa.estado==="cancelado") continue;
-    if(!apa.abonos) continue;
-    for(var j=0;j<apa.abonos.length;j++){
-      var ab=apa.abonos[j], mpa=ab.mpago||"efectivo";
-      ingr+=ab.monto||0;
-      var fa=fiscal(ab.monto||0,mpa);
-      accIva+=fa.iva; accIsr+=fa.isr; accTerm+=fa.term;
-    }
-  }
-  // Saldo a favor retenido (expirado sin usar) = ingreso del negocio, sin pasar por proveedor.
-  for(var i=0;i<(DB.saldos||[]).length;i++){
-    var sa=DB.saldos[i];
-    if(sa.usado) continue;
-    if(sa.fechaVencimiento && sa.fechaVencimiento<hoy()){
-      ingr+=sa.monto||0; // retenido como ingreso
-    }
-  }
+  // Los KPIs de dinero (ingresos, costo a proveedor, ganancia, fiscal) se calculan
+  // SOLO del mes en curso, con la misma regla exacta que usa el cierre de mes:
+  // el ingreso cuenta en el mes de la fecha de cada abono/venta, mientras que el
+  // costo/deuda a proveedor cuenta en el mes en que la pieza se completo (liquido),
+  // aunque parte del dinero haya entrado en un mes anterior. Antes esta tarjeta
+  // sumaba TODO el historico sin filtrar, lo que no coincidia con "Ingresos del
+  // mes" en Arcana Administracion.
+  var mesActual=diaComercial().slice(0,7);
+  var r=ingresoRealMes(mesActual);
+  var ingr=r.ingreso, cost=r.costo, accIva=r.iva, accIsr=r.isr, accTerm=r.term;
   var f={iva:accIva,isr:accIsr,term:accTerm};
   var gn=ingr-accIva-accIsr-accTerm-cost;
-  var kpis=[["Conceptos",DB.items.length+" productos","#c9a96e"],["Piezas disponibles",pz+" piezas","#4ade80"],["Valor inventario",fmt(vInv),"#c9a96e"],["Ventas registradas",DB.ventas.length,"#94a3b8"],["Ingresos totales",fmt(ingr),"#4ade80"],["Costo proveedores",fmt(cost),"#f87171"],["Ganancia neta real",fmt(gn),"#4ade80"]];
+  var kpis=[["Conceptos",DB.items.length+" productos","#c9a96e"],["Piezas disponibles",pz+" piezas","#4ade80"],["Valor inventario",fmt(vInv),"#c9a96e"],["Ventas registradas",DB.ventas.length,"#94a3b8"],["Ingresos del mes",fmt(ingr),"#4ade80"],["Costo proveedores (mes)",fmt(cost),"#f87171"],["Ganancia neta (mes)",fmt(gn),"#4ade80"]];
   var kh=""; for(var i=0;i<kpis.length;i++) kh+='<div class="kpi"><div class="kl">'+kpis[i][0]+'</div><div class="kv" style="color:'+kpis[i][2]+'">'+kpis[i][1]+'</div></div>';
   ge("kgrid").innerHTML=kh;
-  ge("rfiscal").innerHTML='<div class="g3" style="gap:12px"><div><div class="kl">IVA acumulado</div><div style="font-size:17px;font-weight:700;color:#f87171">'+fmt(f.iva)+'</div></div><div><div class="kl">Reserva ISR RESICO 1.5%</div><div style="font-size:17px;font-weight:700;color:#f59e0b">'+fmt(f.isr)+'</div></div><div><div class="kl">Comisiones terminal</div><div style="font-size:17px;font-weight:700;color:#818cf8">'+fmt(f.term)+'</div></div></div><div class="sm mut" style="margin-top:9px">Efectivo sin impuestos ni comision. Transferencia con impuestos sin comision. Tarjeta con todo.</div>';
+  ge("rfiscal").innerHTML='<div class="g3" style="gap:12px"><div><div class="kl">IVA acumulado (mes)</div><div style="font-size:17px;font-weight:700;color:#f87171">'+fmt(f.iva)+'</div></div><div><div class="kl">Reserva ISR RESICO 1.5% (mes)</div><div style="font-size:17px;font-weight:700;color:#f59e0b">'+fmt(f.isr)+'</div></div><div><div class="kl">Comisiones terminal (mes)</div><div style="font-size:17px;font-weight:700;color:#818cf8">'+fmt(f.term)+'</div></div></div><div class="sm mut" style="margin-top:9px">Efectivo sin impuestos ni comision. Transferencia con impuestos sin comision. Tarjeta con todo.</div>';
   var provFiltro=(ge("rprov-filtro")||{}).value||"conventas";
   var ph="",provMostrados=0; 
-  for(var i=0;i<DB.provs.length;i++){
-    var p=DB.provs[i],enT=0,inP=0,cP=0;
+  var provsTabla=provsJDHPrimero();
+  for(var i=0;i<provsTabla.length;i++){
+    var p=provsTabla[i],enT=0,inP=0,cP=0;
     for(var j=0;j<DB.items.length;j++) if(DB.items[j].proveedorId===p.id) enT+=DB.items[j].cantidad||0;
     for(var j=0;j<DB.ventas.length;j++){
       var vj=DB.ventas[j];
       if(vj.cancelacion) continue;
       for(var k=0;k<vj.lineas.length;k++){
-        var l2=vj.lineas[k],it2=getItem(l2.itemId);
+        var l2=vj.lineas[k];
         if(l2.cancelada) continue;
-        if(it2&&it2.proveedorId===p.id){inP+=l2.precio*l2.cantidad;cP+=(it2.costoProveedor||0)*l2.cantidad;}
+        // El proveedor y el costo se leen de la linea (dato guardado al vender),
+        // no del inventario: asi la pieza sigue contando aunque ya se elimino.
+        // El precio se prorratea con el descuento realmente aplicado.
+        var d2=datosLineaVenta(l2);
+        if(d2.provId===p.id){ inP+=precioEfectivoLinea(vj,l2)*l2.cantidad; cP+=d2.costo*l2.cantidad; }
       }
     }
     var gp=inP-cP;
     // Filter: only show providers with sales unless "todos"
     if(provFiltro==="conventas" && inP===0) continue;
     provMostrados++;
-    ph+='<tr style="background:'+(provMostrados%2?"#0d0c0a":"")+'" ><td style="font-weight:600">'+esc(p.nombre)+'</td><td><span class="sm" style="color:'+(p.tipo==="consignacion"?"#f59e0b":"#4ade80")+'">'+(p.tipo==="consignacion"?"Consig.":"Directa")+'</span></td><td class="mut">'+enT+'</td><td class="gold">'+fmt(inP)+'</td><td style="color:#f87171">'+fmt(cP)+'</td><td class="'+(gp>=0?"gp":"gn")+'">'+fmt(gp)+'</td></tr>';
+    ph+='<tr style="background:'+(provMostrados%2?"#0d0c0a":"")+'" ><td style="font-weight:600">'+esc(p.nombre)+'</td><td><span class="sm" style="color:'+(p.tipo==="consignacion"?"#f59e0b":"#4ade80")+'">'+(p.tipo==="consignacion"?"Consig.":"Directa")+'</span></td><td class="mut" data-label="En tienda">'+enT+'</td><td class="gold" data-label="Ingresos">'+fmt(inP)+'</td><td style="color:#f87171" data-label="Costo">'+fmt(cP)+'</td><td class="'+(gp>=0?"gp":"gn")+'" data-label="Ganancia">'+fmt(gp)+'</td></tr>';
   }
-  ge("rprov").innerHTML=ph||'<tr><td colspan="6" style="padding:20px;text-align:center;color:#4a4540">'+(provFiltro==="conventas"?"Ningun proveedor con ventas aun":"Sin datos")+'</td></tr>';
+  ge("rprov").innerHTML=ph||'<tr><td colspan="6" class="full" style="padding:20px;text-align:center;color:#4a4540">'+(provFiltro==="conventas"?"Ningun proveedor con ventas aun":"Sin datos")+'</td></tr>';
   RMeses();
   RChecklist();
   RGrafica();
@@ -1278,7 +1468,9 @@ function RChecklist(){
 
   if(yaCerrado){
     var h2='<div class="h3" style="margin-bottom:6px">Cierre de mes</div>';
-    h2+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado. Nada pendiente por ahora.</div>';
+    h2+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px;margin-bottom:10px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado.</div>';
+    h2+='<div class="sm mut" style="margin-bottom:8px">El Reporte general de ventas y el de Consignatarios ya no estan disponibles para este mes: su detalle linea por linea se archivo al cerrar. Descargalos <b>antes</b> de cerrar el mes siguiente.</div>';
+    h2+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("Excel INV-Mes (inventario actual)","respaldoInventarioProveedores()",true)+'</div>';
     el.innerHTML=h2;
     return;
   }
@@ -1291,6 +1483,11 @@ function RChecklist(){
     var icono=ok?'<span style="color:#4ade80">&#10004;</span>':'<span style="color:#f59e0b">&#9675;</span>';
     return '<div style="display:flex;gap:9px;padding:6px 0;border-bottom:1px solid #1e1c18"><div style="font-size:15px;width:18px;text-align:center">'+icono+'</div><div style="flex:1"><div style="font-size:13px;color:'+(ok?"#8a8578":"#f0ebe3")+'">'+texto+'</div>'+(detalle?'<div class="sm mut">'+detalle+'</div>':'')+'</div></div>';
   }
+  function boton(texto, onclick, activo, colorAlt){
+    var estilo = activo ? (colorAlt?('color:'+colorAlt+';border-color:'+colorAlt+'44'):'') : 'opacity:.4;pointer-events:none';
+    var clase = activo && !colorAlt ? "btna" : "btno";
+    return '<button class="'+clase+'" style="'+estilo+'" onclick="'+onclick+'">'+texto+'</button>';
+  }
 
   // Respaldo de HOY: la red de seguridad se verifica al INICIO, antes de tocar nada
   // irreversible (cerrar mes, limpiar inventario). Un respaldo de un dia anterior
@@ -1299,29 +1496,110 @@ function RChecklist(){
   try{ ultimoResp=localStorage.getItem("ultimoRespaldo"); }catch(e){}
   var respaldoHoyOk = ultimoResp===hoyStr.slice(0,10);
 
-  var h='<div class="h3" style="margin-bottom:4px">Lista de verificacion — cierre de '+nombreM+'</div>';
-  h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos en orden para cerrar el mes correctamente.</div>';
-  h+=fila(respaldoHoyOk, "1. Respalda ANTES de continuar", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo. Usa el boton de abajo.");
-  h+=fila(true, "2. Revisa y corrige las ventas del mes", "Cancela cualquier venta equivocada ANTES de cerrar.");
-  h+=fila(descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Pendiente: usa \"Descargar mes (CSV)\" en el historial de abajo.");
-  h+=fila(yaCerrado, "4. Cierra el mes", "Usa \"Cerrar\" en el historial de abajo. Requiere el CSV descargado. La deuda por proveedor queda calculada y fija en este paso.");
-  h+=fila(false, "5. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero. Usa el boton de abajo."):"Sin piezas en cero pendientes.");
-  h+=fila(false, "6. Genera los Anexos A por proveedor", "Opcional: en cada ficha de proveedor, si necesitas el papeleo de consignacion.");
+  var h='<div class="h3" style="margin-bottom:4px">Panel de cierre de mes — '+nombreM+'</div>';
+  h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
 
-  h+='<div class="sm" style="margin-top:8px;color:#4ade80">El calculo del cierre ya no depende del inventario: la deuda por proveedor queda bien aunque limpies antes o despues de cerrar.</div>';
+  h+=fila(true, "1. Revisa y corrige las ventas del mes", "Cancela cualquier venta equivocada ANTES de continuar. Se hace desde el historial de abajo.");
+  h+=fila(respaldoHoyOk, "2. Respalda", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.");
+  h+=fila(descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Conserva el detalle completo de las ventas.");
+  h+=fila(false, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
+  h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
+  h+=fila(false, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
+  h+=fila(false, "7. Genera el Excel de inventario (INV-Mes)", "Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.");
 
-  h+='<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
-  if(!respaldoHoyOk) h+='<button class="btna" onclick="respaldar()">Respaldar ahora</button>';
-  h+='<button class="btno" onclick="limpiarCerosTodos()" style="color:#f59e0b;border-color:#f59e0b44">Limpiar vendidos de todos los proveedores</button>';
+  // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
+  h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("2. Respaldar ahora","respaldar()",!respaldoHoyOk)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("3. Descargar CSV del mes",'descargarMes("'+ymCerrar+'")',!descargado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("5. Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("6. Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",yaCerrado,"#f59e0b")+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("7. Excel INV-Mes","respaldoInventarioProveedores()",yaCerrado)+'</div>';
   h+='</div>';
 
   el.innerHTML=h;
 }
 
+// FUENTE UNICA DE VERDAD para "cuanto se vendio/ingreso en el mes X".
+// Usada por el dialogo de cierre, el historial de Reportes, y el Reporte General
+// de Ventas, para que los tres SIEMPRE muestren el mismo numero. Antes cada uno
+// tenia su propia formula (una incluia canceladas restando en vez de excluirlas,
+// otra no contaba abonos de apartados), y por eso los totales no coincidian entre si.
+// Regla: ingreso = ventas directas NO canceladas + abonos de apartados de ese mes
+// (excepto cancelados) + saldos a favor retenidos que expiraron ese mes.
+function ingresoRealMes(ym){
+  var ingr=0, ventasCount=0, piezas=0, cost=0, accIva=0, accIsr=0, accTerm=0;
+  for(var i=0;i<DB.ventas.length;i++){
+    var v=DB.ventas[i];
+    if((v.fecha||"").slice(0,7)!==ym) continue;
+    var mp=v.mpago||"efectivo";
+    if(v.cancelacion){
+      // La venta-devolucion SI debe sumarse (su total ya viene en negativo):
+      // es lo que compensa el total completo de la venta original, que nunca
+      // se modifica cuando se cancela solo una de sus lineas.
+      ingr+=v.total;
+      var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
+      continue;
+    }
+    if(v.esApartado){
+      // El ingreso de un apartado viene de sus abonos (contados abajo por fecha),
+      // no de esta linea de "venta resumen" que se crea al liquidar. PERO la deuda
+      // al proveedor (costo) SI se cuenta aqui, en el mes de LIQUIDACION: es cuando
+      // la pieza queda pagada al 100%, aunque parte del dinero haya entrado antes.
+      ventasCount++;
+      for(var j=0;j<v.lineas.length;j++){
+        if(v.lineas[j].cancelada) continue;
+        piezas+=v.lineas[j].cantidad;
+        var lin=v.lineas[j];
+        var provId=lin.proveedorId, costoP=lin.costoProveedor;
+        if(provId===undefined){ var itFb=getItem(lin.itemId); provId=itFb?itFb.proveedorId:null; costoP=itFb?(itFb.costoProveedor||0):0; }
+        if(provId){
+          var pv=getProv(provId);
+          if(pv&&pv.tipo==="consignacion") cost+=(costoP||0)*lin.cantidad;
+        }
+      }
+    } else {
+      ingr+=v.total; ventasCount++;
+      var fv=fiscal(v.total,mp); accIva+=fv.iva; accIsr+=fv.isr; accTerm+=fv.term;
+      for(var j=0;j<v.lineas.length;j++){
+        if(v.lineas[j].cancelada) continue;
+        piezas+=v.lineas[j].cantidad;
+        var lin2=v.lineas[j];
+        var provId2=lin2.proveedorId, costoP2=lin2.costoProveedor;
+        if(provId2===undefined){ var itFb2=getItem(lin2.itemId); provId2=itFb2?itFb2.proveedorId:null; costoP2=itFb2?(itFb2.costoProveedor||0):0; }
+        if(provId2){
+          var pv2=getProv(provId2);
+          if(pv2&&pv2.tipo==="consignacion") cost+=(costoP2||0)*lin2.cantidad;
+        }
+      }
+    }
+  }
+  // Ingreso por abonos: cada abono cuenta en el mes de SU FECHA (no la de liquidacion).
+  for(var i=0;i<DB.apartados.length;i++){
+    var apa=DB.apartados[i];
+    if(apa.estado==="cancelado"||!apa.abonos) continue;
+    for(var j=0;j<apa.abonos.length;j++){
+      var ab=apa.abonos[j];
+      if((ab.fecha||"").slice(0,7)!==ym) continue;
+      var mpa=ab.mpago||"efectivo";
+      ingr+=ab.monto||0;
+      var fa=fiscal(ab.monto||0,mpa); accIva+=fa.iva; accIsr+=fa.isr; accTerm+=fa.term;
+    }
+  }
+  for(var i=0;i<(DB.saldos||[]).length;i++){
+    var sa=DB.saldos[i];
+    if(sa.usado||sa.contabilizadoRetenido) continue;
+    if((sa.fechaVencimiento||"").slice(0,7)!==ym) continue;
+    if(sa.fechaVencimiento>=hoy()) continue;
+    ingr+=sa.monto||0;
+  }
+  return {ingreso:ingr, ventas:ventasCount, piezas:piezas, costo:cost, iva:accIva, isr:accIsr, term:accTerm};
+}
+
 function RMeses(){
   var el=ge("rmeses"); if(!el) return;
-  var pagoColor={"efectivo":"#4ade80","tarjeta":"#818cf8","transferencia":"#f59e0b"};
-  var pagoLabel={"efectivo":"Efectivo","tarjeta":"Tarjeta","transferencia":"Transferencia"};
+  var pagoColor={"efectivo":"#4ade80","tarjeta":"#818cf8","transferencia":"#f59e0b","mixto":"#c9a96e"};
+  var pagoLabel={"efectivo":"Efectivo","tarjeta":"Tarjeta","transferencia":"Transferencia","mixto":"Mixto"};
   // Group sales by month
   var meses={};
   for(var i=0;i<DB.ventas.length;i++){
@@ -1341,16 +1619,12 @@ function RMeses(){
   for(var m=0;m<claves.length;m++){
     var ym=claves[m], vts=meses[ym];
     var esMesActual=(ym===mesActual);
-    var totalMes=0,ventasMes=0,piezasMes=0;
-    for(var i=0;i<vts.length;i++){
-      var v=vts[i];
-      totalMes+=v.total;
-      if(!v.cancelacion){ ventasMes++; for(var j=0;j<v.lineas.length;j++) if(!v.lineas[j].cancelada) piezasMes+=v.lineas[j].cantidad; }
-    }
+    var resumenMes=ingresoRealMes(ym);
+    var totalMes=resumenMes.ingreso, ventasMes=resumenMes.ventas, piezasMes=resumenMes.piezas;
     var abierto=m===0; // primer mes abierto por defecto
     h+='<div class="box" style="margin-bottom:11px">';
-    h+='<div onclick="toggleMes(\''+ym+'\')" style="display:flex;justify-content:space-between;align-items:center;padding:13px 15px;cursor:pointer;background:#141210">';
-    h+='<div style="display:flex;align-items:center;gap:9px"><span id="mes-arrow-'+ym+'" style="color:#6b6358">'+(abierto?"&#9660;":"&#9654;")+'</span><span style="font-family:Georgia,serif;font-size:15px;color:#c9a96e">'+nombreMes(ym)+'</span><span class="sm mut">'+ventasMes+' ventas &middot; '+piezasMes+' piezas</span></div>';
+    h+='<div onclick="toggleMes(\''+ym+'\')" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:13px 15px;cursor:pointer;background:#141210">';
+    h+='<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px 9px"><span id="mes-arrow-'+ym+'" style="color:#6b6358">'+(abierto?"&#9660;":"&#9654;")+'</span><span style="font-family:Georgia,serif;font-size:15px;color:#c9a96e">'+nombreMes(ym)+'</span><span class="sm mut">'+ventasMes+' ventas &middot; '+piezasMes+' piezas</span></div>';
     h+='<span style="font-weight:700;color:#c9a96e;font-size:16px">'+fmt(totalMes)+'</span>';
     h+='</div>';
     h+='<div id="mes-body-'+ym+'" style="display:'+(abierto?"block":"none")+'">';
@@ -1358,7 +1632,10 @@ function RMeses(){
     h+='<button class="btn btns" onclick="descargarMes(\''+ym+'\')">Descargar mes (CSV)</button>';
     h+='<button class="btnr" style="padding:5px 11px;font-size:11px" onclick="cerrarMes(\''+ym+'\')">Cerrar y archivar mes</button>';
     h+='</div>';
-    h+='<div class="tw"><table class="tbl"><thead><tr><th>Fecha</th><th>Pago</th><th>Total</th><th>Prendas vendidas</th></tr></thead><tbody>';
+    // "tbl-stack": en celular cada venta se muestra como tarjeta (fecha, pago y
+    // total en una linea; prendas debajo a todo el ancho) en vez de una tabla
+    // que se corta a la derecha. Son los mismos botones reales, no una copia.
+    h+='<div class="tw"><table class="tbl tbl-stack"><thead><tr><th>Fecha</th><th>Pago</th><th>Total</th><th>Prendas vendidas</th></tr></thead><tbody>';
     for(var i=0;i<vts.length;i++){
       var v=vts[i], mp2=v.mpago||"efectivo";
       var rowBg2=v.cancelacion?"#1a0a0a":(i%2?"#0d0c0a":"");
@@ -1367,7 +1644,14 @@ function RMeses(){
       var det2=""; for(var k=0;k<v.lineas.length;k++){var lk=v.lineas[k],itk=getItem(lk.itemId);
         var cancelBtn2=lk.cancelada?'<span style="color:#f87171;font-size:10px;margin-left:6px">CANCELADA</span>':((v.cancelacion||!esMesActual)?'':'<button onclick="cancelarVenta(\''+v.id+'\','+k+')" style="background:none;border:1px solid #f8717144;border-radius:4px;color:#f87171;font-size:10px;padding:1px 6px;cursor:pointer;margin-left:6px">Cancelar</button>');
         det2+='<div style="font-size:11px;line-height:1.5;display:flex;align-items:center;flex-wrap:wrap"><span class="mono" style="color:'+(lk.cancelada?"#6b6358":"#c9a96e")+';text-decoration:'+(lk.cancelada?"line-through":"none")+';margin-right:6px">'+esc(itk?itk.sku:"?")+'</span><span class="mut">'+esc(itk?itk.descripcion:"eliminada")+'</span><span style="color:#4ade80;margin-left:4px">'+fmt(lk.precio*lk.cantidad)+'</span>'+cancelBtn2+'</div>';}
-      h+='<tr style="background:'+rowBg2+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td><td><span style="color:'+(pagoColor[mp2]||"#a09480")+';font-size:12px">'+(pagoLabel[mp2]||mp2)+'</span></td><td style="white-space:nowrap">'+totalDisp2+'</td><td>'+det2+'</td></tr>';
+      if(!v.cancelacion){
+        if(v.notas && v.notas.trim()){
+          det2+='<div style="margin-top:4px;padding:3px 7px;background:#1a1610;border-left:2px solid #c9a96e;border-radius:3px;font-size:10.5px;color:#d8cdb8;display:flex;align-items:center;justify-content:space-between;gap:6px"><span><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</span><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;white-space:nowrap;font-size:10px">Editar</span></div>';
+        } else {
+          det2+='<div style="margin-top:4px"><span onclick="editarNotaVenta(\''+v.id+'\')" style="color:#6b6358;cursor:pointer;text-decoration:underline;font-size:10px">+ Agregar nota</span></div>';
+        }
+      }
+      h+='<tr style="background:'+rowBg2+';vertical-align:top"><td class="mut" style="white-space:nowrap">'+v.fecha+'</td><td><span style="color:'+(pagoColor[mp2]||"#a09480")+';font-size:12px">'+(pagoLabel[mp2]||mp2)+'</span></td><td style="white-space:nowrap">'+totalDisp2+'</td><td class="full">'+det2+'</td></tr>';
     }
     h+='</tbody></table></div></div></div>';
   }
@@ -1379,6 +1663,143 @@ function toggleMes(ym){
   if(!body) return;
   if(body.style.display==="none"){ body.style.display="block"; if(arrow) arrow.innerHTML="&#9660;"; }
   else { body.style.display="none"; if(arrow) arrow.innerHTML="&#9654;"; }
+}
+
+// Respaldo del inventario DISPONIBLE (piezas no vendidas), en Excel real (.xlsx)
+// con una pestaña por proveedor, imitando el formato de trabajo de Laura.
+// Convierte una fecha "YYYY-MM-DD" a formato abreviado "mes-aa" (ej. "may-26"),
+// igual al formato que usa Laura en su plantilla personal de Excel.
+var MESES_ABREV=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+function mesAnioAbrev(fechaIso){
+  if(!fechaIso) return "";
+  var p=String(fechaIso).split("-");
+  if(p.length<2) return fechaIso; // formato inesperado: devolver tal cual
+  var mIdx=parseInt(p[1],10)-1;
+  if(isNaN(mIdx)||mIdx<0||mIdx>11) return fechaIso;
+  var aa=p[0].slice(-2);
+  return MESES_ABREV[mIdx]+"-"+aa;
+}
+
+// Compara dos claves tipo "AV2936" separando letras y numero, para que el orden
+// respete el valor numerico real (AV88 antes de AV310 antes de AV2936), no el
+// orden alfabetico de texto (que pondria AV310 antes de AV88 por error).
+function compararClaveNatural(skuA,skuB){
+  var a=String(skuA||""), b=String(skuB||"");
+  var ma=a.match(/^([^\d]*)(\d+)?(.*)$/), mb=b.match(/^([^\d]*)(\d+)?(.*)$/);
+  var prefA=ma?ma[1]:a, prefB=mb?mb[1]:b;
+  var cmpPref=prefA.localeCompare(prefB,'es',{sensitivity:'base'});
+  if(cmpPref!==0) return cmpPref;
+  var numA=ma&&ma[2]?parseInt(ma[2],10):null, numB=mb&&mb[2]?parseInt(mb[2],10):null;
+  if(numA!==null&&numB!==null&&numA!==numB) return numA-numB;
+  if(numA!==null&&numB===null) return -1;
+  if(numA===null&&numB!==null) return 1;
+  var restA=ma?ma[3]:"", restB=mb?mb[3]:"";
+  return restA.localeCompare(restB,'es',{sensitivity:'base'});
+}
+
+function respaldoInventarioProveedores(){
+  if(typeof ExcelJS==="undefined"){ alert("No se pudo cargar la libreria de Excel. Verifica tu conexion a internet e intenta de nuevo."); return; }
+  var porProv={}; // provId -> [items]
+  for(var i=0;i<DB.items.length;i++){
+    var it=DB.items[i];
+    if((it.cantidad||0)<=0) continue; // solo piezas disponibles (no vendidas)
+    var pid=it.proveedorId; if(!pid) continue;
+    if(!porProv[pid]) porProv[pid]=[];
+    porProv[pid].push(it);
+  }
+  var provIds=Object.keys(porProv);
+  if(!provIds.length){ alert("No hay piezas disponibles en inventario para respaldar."); return; }
+
+  // Ordenar proveedores alfabeticamente, PERO con JDH siempre primero (a peticion de Laura:
+  // JDH es su proveedor de compra directa mas usado y quiere verlo de inmediato).
+  var provsOrd=provIds.map(function(pid){ return {id:pid, prov:getProv(pid)}; })
+    .filter(function(x){ return x.prov; })
+    .sort(function(a,b){
+      var aEsJDH=(a.prov.nombre||"").trim().toUpperCase()==="JDH";
+      var bEsJDH=(b.prov.nombre||"").trim().toUpperCase()==="JDH";
+      if(aEsJDH&&!bEsJDH) return -1;
+      if(bEsJDH&&!aEsJDH) return 1;
+      return (a.prov.nombre||"").localeCompare(b.prov.nombre||"",'es',{sensitivity:'base'});
+    });
+
+  var wb=new ExcelJS.Workbook();
+  // Orden de columnas actualizado: ...NOTAS, COMISION, TAX, TOTAL (antes era TAX, TOTAL, COMISION)
+  var encabezados=["CLAVE","CANT","INGRESO","DESCRIPCION","COSTO","PRECIO VENTA","CATEGORIA","EPOCA","TALLA","NOTAS","COMISION","TAX","TOTAL"];
+  var anchos=[10,6,10,38,8,11,14,10,8,20,10,8,9];
+
+  // Colores de relleno por columna (imitando el Excel de referencia: bloques de color por grupo de columnas).
+  // ExcelJS usa ARGB de 8 caracteres (alpha + rgb), sin el prefijo "#".
+  var coloresCol=["FFD9E8FC","FFD9E8FC","FFD9E8FC","FFFFFFFF","FFFFE699","FFFFE699","FFD9D2E9","FFD9D2E9","FFD9D2E9","FFFFFFFF","FFC6E0B4","FFC6E0B4","FFC6E0B4"];
+
+  var nombresUsados={};
+  for(var p=0;p<provsOrd.length;p++){
+    var pid=provsOrd[p].id, prov=provsOrd[p].prov;
+    var items=porProv[pid].slice().sort(function(a,b){ return compararClaveNatural(a.sku,b.sku); });
+
+    // Nombre de hoja: nombre del proveedor, limitado a 31 caracteres (limite de Excel) y sin caracteres invalidos
+    var nombreHoja=(prov.nombre||"Proveedor").replace(/[\\\/\?\*\[\]:]/g,"").slice(0,31);
+    var nombreFinal=nombreHoja, dup=1;
+    while(nombresUsados[nombreFinal]){ dup++; nombreFinal=(nombreHoja.slice(0,28)+"_"+dup); }
+    nombresUsados[nombreFinal]=true;
+
+    var ws=wb.addWorksheet(nombreFinal);
+    ws.columns=encabezados.map(function(h,idx){ return {header:h, key:"c"+idx, width:anchos[idx]}; });
+
+    // Fila de encabezado: color de relleno por columna + negrita + centrado
+    var filaEnc=ws.getRow(1);
+    for(var c=0;c<encabezados.length;c++){
+      var cell=filaEnc.getCell(c+1);
+      cell.fill={type:"pattern", pattern:"solid", fgColor:{argb:coloresCol[c]}};
+      cell.font={bold:true};
+      cell.alignment={horizontal:"center"};
+    }
+
+    // Filas de datos + formulas EN VIVO. Nuevo orden de columnas: K=COMISION, L=TAX, M=TOTAL.
+    // Formula fiscal identica a la que usa Arcana internamente (tarjeta como referencia):
+    // Tax = Precio - (Precio/1.16) + Precio*0.015 + Precio*0.0406
+    // Total = Precio - Tax
+    // Comision = Total - Costo
+    // Como Comision ahora va PRIMERO mientras que matematicamente depende de Total,
+    // se calcula Tax primero como formula auxiliar en L, Total en M, y Comision en K
+    // referenciando M y E (el orden de escritura de formulas no afecta el resultado).
+    for(var i=0;i<items.length;i++){
+      var it=items[i], filaN=i+2;
+      var costo=Math.round((it.costoProveedor||0)*100)/100;
+      var precio=Math.round((it.precioVenta||0)*100)/100;
+      ws.addRow([
+        it.sku||"", it.cantidad||0, mesAnioAbrev(it.fechaIngreso), it.descripcion||"",
+        costo, precio, it.categoria||"", it.epoca||"", it.talla||"", it.notas||"",
+        {formula:"ROUND(M"+filaN+"-E"+filaN+",0)"},
+        {formula:"ROUND(F"+filaN+"-(F"+filaN+"/1.16)+F"+filaN+"*0.015+F"+filaN+"*0.0406,0)"},
+        {formula:"ROUND(F"+filaN+"-L"+filaN+",0)"}
+      ]);
+    }
+
+    // Colorear TODA la columna de datos (no solo el encabezado), para que el bloque
+    // de color se vea continuo de arriba a abajo, como en la plantilla de Laura.
+    for(var i=0;i<items.length;i++){
+      var filaD=ws.getRow(i+2);
+      for(var c=0;c<encabezados.length;c++){
+        filaD.getCell(c+1).fill={type:"pattern", pattern:"solid", fgColor:{argb:coloresCol[c]}};
+      }
+    }
+
+    // Congelar la primera fila (encabezados) para que se mantenga visible al desplazarse.
+    ws.views=[{state:"frozen", ySplit:1}];
+  }
+
+  var f2=hoy();
+  var partesF=f2.split("-"); // [YYYY, MM, DD]
+  var nombreArchivo="A-INV-"+partesF[0]+"-"+MESES_ES[parseInt(partesF[1],10)-1]+"-"+parseInt(partesF[2],10)+".xlsx";
+
+  wb.xlsx.writeBuffer().then(function(buffer){
+    var blob=new Blob([buffer],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    var url=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=url; a.download=nombreArchivo; a.click(); URL.revokeObjectURL(url);
+    apaOkGlobal("Respaldo de inventario por proveedor descargado ("+provsOrd.length+" proveedores).");
+  }).catch(function(err){
+    alert("No se pudo generar el archivo de Excel. Intenta de nuevo.");
+  });
 }
 
 function descargarMes(ym){
@@ -1406,6 +1827,7 @@ function descargarMes(ym){
   if(!window._mesesDescargados) window._mesesDescargados={};
   window._mesesDescargados[ym]=true;
   apaOkGlobal("Mes "+nombreMes(ym)+" descargado. Ahora puedes cerrarlo.");
+  RChecklist();
 }
 
 function apaOkGlobal(msg){
@@ -1423,16 +1845,16 @@ function cerrarMes(ym){
   }
   // Compute month summary
   var pagoTot={efectivo:0,tarjeta:0,transferencia:0};
-  var totalMes=0,ventasMes=0,piezasMes=0,ingr=0,cost=0,accIva=0,accIsr=0,accTerm=0,devol=0;
+  var ventasMes=0,piezasMes=0,ingr=0,cost=0,accIva=0,accIsr=0,accTerm=0,devol=0;
   var porProv={};
   var restantes=[];
   for(var i=0;i<DB.ventas.length;i++){
     var v=DB.ventas[i];
     if((v.fecha||"").slice(0,7)!==ym){ restantes.push(v); continue; }
     var mp=v.mpago||"efectivo";
-    totalMes+=v.total;
     if(v.cancelacion){
       devol+=Math.abs(v.total);
+      ingr+=v.total; // v.total ya es negativo: compensa el total de la venta original que no se modifico
       var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
       pagoTot[mp]=(pagoTot[mp]||0)+v.total;
     } else if(v.esApartado){
@@ -1519,10 +1941,10 @@ function cerrarMes(ym){
     pagoTot["efectivo"]=(pagoTot["efectivo"]||0)+saldoRetenidoMes; // se asume retenido como efectivo
   }
   var ganancia=ingr-accIva-accIsr-accTerm-cost;
-  if(!confirm("Cerrar "+nombreMes(ym)+"?\n\nTotal: "+fmt(totalMes)+"\nVentas: "+ventasMes+" | Piezas: "+piezasMes+"\n\nLas ventas de este mes saldran de los totales activos y su resumen quedara guardado en el desempeno mensual. Esta accion no se puede deshacer (pero ya tienes el CSV descargado).")) return;
+  if(!confirm("Cerrar "+nombreMes(ym)+"?\n\nTotal: "+fmt(ingr)+"\nVentas: "+ventasMes+" | Piezas: "+piezasMes+"\n\nLas ventas de este mes saldran de los totales activos y su resumen quedara guardado en el desempeno mensual. Esta accion no se puede deshacer (pero ya tienes el CSV descargado).")) return;
   // Save summary to archivo
   DB.archivo.push({
-    mes:ym, total:totalMes, ventas:ventasMes, piezas:piezasMes,
+    mes:ym, total:ingr, ventas:ventasMes, piezas:piezasMes,
     ingreso:ingr, costo:cost, ganancia:ganancia,
     iva:accIva, isr:accIsr, term:accTerm, devoluciones:devol,
     efectivo:pagoTot.efectivo||0, tarjeta:pagoTot.tarjeta||0, transferencia:pagoTot.transferencia||0,
@@ -1714,7 +2136,8 @@ function impProvChg(){
 }
 function aImp(){
   var po='<option value="__n">+ Crear nuevo proveedor</option>';
-  for(var i=0;i<DB.provs.length;i++) po+='<option value="'+DB.provs[i].id+'">'+esc(DB.provs[i].nombre)+'</option>';
+  var provsOrdA=provsJDHPrimero();
+  for(var i=0;i<provsOrdA.length;i++) po+='<option value="'+provsOrdA[i].id+'">'+esc(provsOrdA[i].nombre)+'</option>';
   var instruc='<div style="background:#0f0e0c;border:1px solid #4ade8033;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.9">';
   instruc+='<strong style="color:#c9a96e">Como importar:</strong><br>';
   instruc+='1. En Excel selecciona las filas de datos (con o sin encabezados)<br>';
@@ -1998,10 +2421,14 @@ function pagarYReservarCarrito(){
     if(!it||(it.cantidad||0)<carrito[i].cant){ if(err) err.textContent="Sin existencia suficiente de "+carrito[i].item.sku+"."; return; }
   }
   var piezas=[];
+  // Prorratear el precio de lista de cada pieza segun el precio final acordado (con descuento).
+  var subtotalCarrito=0; for(var i=0;i<carrito.length;i++) subtotalCarrito+=carrito[i].precio*carrito[i].cant;
+  var factorDescuento = subtotalCarrito>0 ? (precio/subtotalCarrito) : 1;
   for(var i=0;i<carrito.length;i++){
     var l=carrito[i], it=getItem(l.id);
+    var precioConDescuento = Math.round((l.precio*factorDescuento)*100)/100;
     for(var c=0;c<l.cant;c++){
-      piezas.push({itemId:it.id, sku:it.sku, descripcion:it.descripcion, precio:l.precio});
+      piezas.push({itemId:it.id, sku:it.sku, descripcion:it.descripcion, precio:precioConDescuento});
     }
     it.cantidad=Math.max(0,(it.cantidad||0)-l.cant);
   }
@@ -2039,10 +2466,17 @@ function guardarApartadoCarrito(){
     if(!it||(it.cantidad||0)<carrito[i].cant){ if(err) err.textContent="Sin existencia suficiente de "+carrito[i].item.sku+"."; return; }
   }
   var piezas=[];
+  // Prorratear el precio de lista de cada pieza segun el precio final acordado
+  // (que puede tener descuento aplicado, automatico o editado a mano). Sin esto,
+  // cada pieza guardaba su precio de lista completo, y al liquidar el apartado
+  // la deuda a proveedor y el precio de venta registrado no reflejaban el descuento.
+  var subtotalCarrito=0; for(var i=0;i<carrito.length;i++) subtotalCarrito+=carrito[i].precio*carrito[i].cant;
+  var factorDescuento = subtotalCarrito>0 ? (precio/subtotalCarrito) : 1;
   for(var i=0;i<carrito.length;i++){
     var l=carrito[i], it=getItem(l.id);
+    var precioConDescuento = Math.round((l.precio*factorDescuento)*100)/100;
     for(var c=0;c<l.cant;c++){
-      piezas.push({itemId:it.id, sku:it.sku, descripcion:it.descripcion, precio:l.precio});
+      piezas.push({itemId:it.id, sku:it.sku, descripcion:it.descripcion, precio:precioConDescuento});
     }
     it.cantidad=Math.max(0,(it.cantidad||0)-l.cant);
   }
@@ -2127,11 +2561,31 @@ function liquidarApartado(apa, aResguardo){
     agrup[pz.itemId].cantidad++;
   }
   for(var k in agrup) lineas.push(agrup[k]);
+  // El metodo de pago de la venta refleja de donde vino el dinero. Si los abonos
+  // usaron MAS DE UN metodo, se marca "mixto" en vez de forzar uno solo (predominante
+  // o el ultimo): asi queda visible que el pago se dividio, y el calculo fiscal
+  // (ver fiscalVenta) usa el detalle real de cada abono en vez de adivinar.
+  var mpagoVenta="efectivo";
+  if(apa.abonos && apa.abonos.length){
+    var metodosUsados={};
+    var porMetodo={};
+    for(var ab=0;ab<apa.abonos.length;ab++){
+      var abo=apa.abonos[ab], mp=abo.mpago||"efectivo";
+      metodosUsados[mp]=true;
+      porMetodo[mp]=(porMetodo[mp]||0)+(abo.monto||0);
+    }
+    var distintos=Object.keys(metodosUsados);
+    if(distintos.length>1){
+      mpagoVenta="mixto";
+    } else {
+      mpagoVenta=distintos[0];
+    }
+  }
   var venta={
     id:ventaId, fecha:diaComercial(), ts:ahora(),
     lineas:lineas,
     total:apa.precio,
-    mpago:(apa.abonos&&apa.abonos.length?apa.abonos[apa.abonos.length-1].mpago:"efectivo"),
+    mpago:mpagoVenta,
     esApartado:true, apartadoId:apa.id,
     abonos:apa.abonos?apa.abonos.slice():[]
   };
@@ -2439,16 +2893,49 @@ function RSaldos(){
 
 // ── PDF ────────────────────────────────────────────────────────────────────────
 function expProvPDF(){
+  // Este reporte cubre UNICAMENTE el periodo vigente. Al cerrar un mes sus
+  // ventas salen de DB.ventas, asi que un filtro de fechas hacia el pasado
+  // devolvia siempre cero y podia hacer creer que no hubo ventas. Por eso no
+  // hay campos de fecha: el reporte informa el periodo que realmente cubre.
   var po='<option value="todos">Todos los proveedores</option>';
-  for(var i=0;i<DB.provs.length;i++) po+='<option value="'+DB.provs[i].id+'">'+esc(DB.provs[i].nombre)+'</option>';
-  var h='<div class="g2" style="margin-bottom:12px">';
+  var provsOrd=provsAlfabetico();
+  for(var i=0;i<provsOrd.length;i++) po+='<option value="'+provsOrd[i].id+'">'+esc(provsOrd[i].nombre)+'</option>';
+  var h='<div style="background:#0f0e0c;border:1px solid #c9a96e33;border-radius:8px;padding:11px;margin-bottom:13px;font-size:12.5px;line-height:1.6;color:#a09480">';
+  h+='Cubre el <b style="color:#c9a96e">periodo vigente</b> ('+esc(periodoVigenteTexto())+'). Los meses ya cerrados no se incluyen: su respaldo son los reportes que se descargan durante el cierre.';
+  h+='</div>';
+  h+='<div class="g2" style="margin-bottom:12px">';
   h+='<div class="fld"><label class="lbl">Proveedor</label><select class="inp" id="pdf-prov">'+po+'</select></div>';
-  h+='<div class="fld"><label class="lbl">Inventario</label><select class="inp" id="pdf-estado"><option value="todos">Disponibles y vendidos (separados)</option><option value="disponibles">Solo disponibles</option><option value="vendidos">Solo vendidos/agotados</option></select></div></div>';
-  h+='<div class="fld"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#a09480"><input type="checkbox" id="pdf-ocultar-precio" style="accent-color:#c9a96e;width:15px;height:15px"/> Ocultar columna de precio de venta</label></div>';
-  h+='<div class="g2" style="margin-bottom:12px"><div class="fld"><label class="lbl">Ventas desde</label><input type="date" class="inp" id="pdf-desde" value="'+hoy().slice(0,7)+'-01'+'"/></div>';
-  h+='<div class="fld"><label class="lbl">Ventas hasta</label><input type="date" class="inp" id="pdf-hasta" value="'+hoy()+'"/></div></div>';
+  h+='<div class="fld"><label class="lbl">Inventario</label><select class="inp" id="pdf-estado"><option value="todos">Disponibles, apartadas y sin existencia (separadas)</option><option value="disponibles">Solo disponibles</option><option value="apartadas">Solo apartadas</option><option value="vendidos">Solo sin existencia</option></select></div></div>';
+  // Columnas opcionales: el reporte base sale SIN ellas (clave, descripcion,
+  // cantidad, costo del proveedor y fecha de ingreso). El costo del proveedor
+  // nunca es opcional porque es la cifra que se le paga. Epoca, talla y notas
+  // se toman del inventario.
+  var casilla=function(id,txt){
+    return '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#a09480">'+
+      '<input type="checkbox" id="'+id+'" style="accent-color:#c9a96e;width:15px;height:15px"/> '+txt+'</label>';
+  };
+  h+='<div class="fld"><label class="lbl">Columnas adicionales (el reporte base no las incluye)</label>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;padding:4px 2px">';
+  h+=casilla("pdf-inc-precio","Precio de venta");
+  h+=casilla("pdf-inc-epoca","Epoca");
+  h+=casilla("pdf-inc-talla","Talla");
+  h+=casilla("pdf-inc-notas","Notas");
+  h+='</div></div>';
   h+='<div style="display:flex;justify-content:space-between;padding-top:7px"><button class="btn" onclick="CM()">Cancelar</button><button class="btna" onclick="generarPDF()">Generar PDF</button></div>';
   OM("Exportar PDF por proveedor",h);
+}
+// Texto del periodo que el reporte cubre realmente: los meses que aun tienen
+// ventas activas (sin cerrar). Si hay mas de uno, se muestra el rango.
+function periodoVigenteTexto(){
+  var meses={};
+  for(var i=0;i<DB.ventas.length;i++){
+    var ym=(DB.ventas[i].fecha||"").slice(0,7);
+    if(ym) meses[ym]=true;
+  }
+  var lista=Object.keys(meses).sort();
+  if(!lista.length) return nombreMes(diaComercial().slice(0,7));
+  if(lista.length===1) return nombreMes(lista[0]);
+  return nombreMes(lista[0])+" a "+nombreMes(lista[lista.length-1]);
 }
 // ══════════════ SISTEMA DE CONTRATO DE CONSIGNACION ══════════════
 function editarPlantillaContrato(){
@@ -2565,13 +3052,37 @@ function fechaLarga(iso){
   return { dia:String(parseInt(parts[2],10)), mes:meses[parseInt(parts[1],10)-1]||"", ano:parts[0] };
 }
 
+
+// Detecta que claves tuvieron alguna venta cancelada en el mes, con sus fechas.
+// Se usa para agregar una nota de transparencia en los reportes cuando una clave
+// aparece junto a una cancelacion relacionada, sin cambiar ningun calculo.
+function cancelacionesPorClaveMes(ym){
+  var mapa={}; // sku -> [fechas de cancelacion]
+  for(var i=0;i<DB.ventas.length;i++){
+    var v=DB.ventas[i];
+    if(!v.cancelacion) continue;
+    if((v.fecha||"").slice(0,7)!==ym) continue;
+    for(var j=0;j<v.lineas.length;j++){
+      var lin=v.lineas[j];
+      var it=getItem(lin.itemId);
+      var sku=it?it.sku:(lin.sku||lin.itemId);
+      if(!mapa[sku]) mapa[sku]=[];
+      mapa[sku].push(v.fecha);
+    }
+  }
+  return mapa;
+}
+
 function reporteGeneralVentas(){
   var ym = diaComercial().slice(0,7);
   var nombreM = nombreMes(ym);
+  var cancelMap = cancelacionesPorClaveMes(ym);
 
-  // Recolectar todas las ventas del mes (activas o archivadas), excluyendo canceladas
+  // Recolectar todas las ventas del mes (activas o archivadas), excluyendo canceladas.
+  // El precio de venta de cada linea se PRORRATEA con el descuento global de la venta
+  // (si lo hubo), igual que en cancelarVenta, para que el reporte refleje lo realmente cobrado.
   var lineasPorProv={}; // provId -> {nombre, tipo, lineas:[], totalCosto, totalVenta}
-  function agregarLinea(fecha, linea, mpago){
+  function agregarLinea(fecha, linea, precioEfectivo){
     if(linea.cancelada) return;
     var provId=linea.proveedorId;
     if(provId===undefined){ var itF=getItem(linea.itemId); provId=itF?itF.proveedorId:null; }
@@ -2583,17 +3094,31 @@ function reporteGeneralVentas(){
     var sku=it?it.sku:(linea.sku||linea.itemId);
     var desc=it?it.descripcion:(linea.descripcion||"");
     if(!lineasPorProv[provId]) lineasPorProv[provId]={nombre:pv.nombre,tipo:pv.tipo,lineas:[],totalCosto:0,totalVenta:0};
-    var venta=linea.precio*linea.cantidad;
     var costo=(costoU||0)*linea.cantidad;
-    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0,venta:linea.precio});
+    var tieneCancelRel = cancelMap[sku] && cancelMap[sku].length>0;
+    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0,venta:precioEfectivo,cancelRel:tieneCancelRel,cancelFechas:tieneCancelRel?cancelMap[sku]:null});
     lineasPorProv[provId].totalCosto+=costo;
-    lineasPorProv[provId].totalVenta+=venta;
+    lineasPorProv[provId].totalVenta+=precioEfectivo*linea.cantidad;
   }
   for(var i=0;i<DB.ventas.length;i++){
     var v=DB.ventas[i];
     if((v.fecha||"").slice(0,7)!==ym) continue;
     if(v.cancelacion) continue;
-    for(var j=0;j<v.lineas.length;j++) agregarLinea(v.fecha, v.lineas[j], v.mpago);
+    // Prorratear el descuento global de la venta entre sus lineas, segun peso en el subtotal
+    var subtotalVenta=0;
+    for(var k=0;k<v.lineas.length;k++) subtotalVenta+=v.lineas[k].precio*v.lineas[k].cantidad;
+    var descuentoVenta=v.descuento||0;
+    for(var j=0;j<v.lineas.length;j++){
+      var lin=v.lineas[j];
+      var precioEfectivo=lin.precio;
+      if(descuentoVenta>0 && subtotalVenta>0){
+        var subtotalLinea=lin.precio*lin.cantidad;
+        var proporcion=subtotalLinea/subtotalVenta;
+        var descuentoLinea=descuentoVenta*proporcion;
+        precioEfectivo=Math.max(0,(subtotalLinea-descuentoLinea)/lin.cantidad);
+      }
+      agregarLinea(v.fecha, lin, precioEfectivo);
+    }
   }
 
   var provsConsig=[], provsDirecta=[];
@@ -2612,8 +3137,8 @@ function reporteGeneralVentas(){
   css+='td{padding:2px 6px;border:1px solid #f0ece2}.tot-prov{text-align:right;font-size:8.3pt;font-weight:700;color:#6b4e2e;padding:2px 4px 6px}';
   css+='.totales{margin-top:10px;font-size:11pt;font-weight:700;color:#4a3620;text-align:right}@media print{body{margin:0}}';
 
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
-  doc+='<h1>Reporte General de Ventas<\/h1><div class="sub">'+esc(nombreM)+' &middot; Ventas canceladas excluidas &middot; Jardín de Hallazgos<\/div>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte General de Ventas - '+esc(nombreM)+'<\/title><style>'+css+'<\/style><\/head><body>';
+  doc+='<h1>Reporte General de Ventas<\/h1><div class="sub">'+esc(nombreM)+' &middot; Ventas canceladas excluidas &middot; montos con descuentos ya aplicados &middot; Jardín de Hallazgos<\/div>';
 
   function renderSeccion(titulo, provs){
     doc+='<h2 class="seccion">'+esc(titulo)+'<\/h2>';
@@ -2626,6 +3151,9 @@ function reporteGeneralVentas(){
       for(var j=0;j<d.lineas.length;j++){
         var l=d.lineas[j];
         doc+='<tr><td>'+l.fecha+'<\/td><td>'+esc(l.sku)+'<\/td><td>'+esc((l.desc||"").slice(0,36))+'<\/td><td>'+l.cant+'<\/td><td>'+fmt(l.costo)+'<\/td><td>'+fmt(l.venta)+'<\/td><\/tr>';
+        if(l.cancelRel){
+          doc+='<tr><td colspan="6" style="font-size:7.3pt;color:#b45309;background:#fdf3ef;padding:2px 6px;border:1px solid #ece5d6">Nota: '+esc(l.sku)+' tuvo una venta cancelada el '+l.cancelFechas.join(", ")+'; esa cancelación no está incluida en este total.<\/td><\/tr>';
+        }
       }
       doc+='<\/table>';
       doc+='<div class="tot-prov">Subtotal '+esc(d.nombre)+' — Costo: '+fmt(d.totalCosto)+' &middot; Venta: '+fmt(d.totalVenta)+'<\/div><\/div>';
@@ -2638,6 +3166,8 @@ function reporteGeneralVentas(){
   var rc=renderSeccion("Consignatarios", provsConsig);
   var rd=renderSeccion("Compra Directa", provsDirecta);
   doc+='<div class="totales" style="margin-top:14px;font-size:13pt;border-top:2px solid #6b4e2e;padding-top:8px">TOTAL GENERAL DEL MES — Costo: '+fmt(rc[0]+rd[0])+' &middot; Venta: '+fmt(rc[1]+rd[1])+'<\/div>';
+  var resumenReal=ingresoRealMes(ym);
+  doc+='<div style="margin-top:6px;font-size:8.5pt;color:#888;text-align:right">Este total valora cada pieza por su precio de venta. El ingreso que se archiva al cerrar el mes (que cuenta abonos de apartados por su fecha real de cobro) es: '+fmt(resumenReal.ingreso)+'. Es normal que difieran ligeramente si hay apartados con abonos en curso.<\/div>';
   doc+='<\/body><\/html>';
 
   var w=window.open("","_blank","width=900,height=700");
@@ -2649,6 +3179,7 @@ function reporteGeneralVentas(){
 function reporteConsignatarios(){
   var ym = diaComercial().slice(0,7);
   var nombreM = nombreMes(ym);
+  var cancelMap = cancelacionesPorClaveMes(ym);
 
   var lineasPorProv={};
   function agregarLinea(fecha, linea){
@@ -2665,7 +3196,8 @@ function reporteConsignatarios(){
     var desc=it?it.descripcion:(linea.descripcion||"");
     if(!lineasPorProv[provId]) lineasPorProv[provId]={nombre:pv.nombre,lineas:[],total:0};
     var costo=(costoU||0)*linea.cantidad;
-    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0});
+    var tieneCancelRel = cancelMap[sku] && cancelMap[sku].length>0;
+    lineasPorProv[provId].lineas.push({fecha:fecha,sku:sku,desc:desc,cant:linea.cantidad,costo:costoU||0,cancelRel:tieneCancelRel,cancelFechas:tieneCancelRel?cancelMap[sku]:null});
     lineasPorProv[provId].total+=costo;
   }
   for(var i=0;i<DB.ventas.length;i++){
@@ -2688,7 +3220,7 @@ function reporteConsignatarios(){
   css+='th{background:#f5efe4;text-align:left;padding:5px 8px;border:1px solid #e0d6c2}td{padding:5px 8px;border:1px solid #ece5d6}';
   css+='.totales{margin-top:14px;font-size:13pt;font-weight:700;color:#4a3620;text-align:right;border-top:2px solid #c9a96e;padding-top:8px}@media print{body{margin:0}}';
 
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte de Consignatarios - '+esc(nombreM)+'<\/title><style>'+css+'<\/style><\/head><body>';
   for(var i=0;i<provs.length;i++){
     var d=provs[i];
     d.lineas.sort(function(a,b){ return (a.fecha||"").localeCompare(b.fecha||""); });
@@ -2698,6 +3230,9 @@ function reporteConsignatarios(){
     for(var j=0;j<d.lineas.length;j++){
       var l=d.lineas[j];
       doc+='<tr><td>'+l.fecha+'<\/td><td>'+esc(l.sku)+'<\/td><td>'+esc((l.desc||"").slice(0,40))+'<\/td><td>'+l.cant+'<\/td><td>'+fmt(l.costo)+'<\/td><\/tr>';
+      if(l.cancelRel){
+        doc+='<tr><td colspan="5" style="font-size:8pt;color:#b45309;background:#fdf3ef;padding:3px 8px;border:1px solid #ece5d6">Nota: '+esc(l.sku)+' tuvo una venta cancelada el '+l.cancelFechas.join(", ")+'; esa cancelación no está incluida en este total.<\/td><\/tr>';
+      }
     }
     doc+='<\/table><div class="totales">Total a pagar: '+fmt(d.total)+'<\/div><\/div>';
   }
@@ -2729,7 +3264,7 @@ function reporteProveedor(provId){
   css+='.firma{flex:1;text-align:center}.firma .linea{border-top:1px solid #000;margin-top:36px;padding-top:5px;font-size:11px}';
   css+='@page{margin:14mm 12mm}@media print{body{margin:0}}';
 
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Anexo A - '+esc(nombreCompleto)+' - '+esc(nombreMes(hoy().slice(0,7)))+'<\/title><style>'+css+'<\/style><\/head><body>';
   var logoPdf=(DB.config&&DB.config.logo)||"";
   if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;object-fit:contain;float:right">';
   doc+='<h1>Jardín de Hallazgos</h1>';
@@ -2774,75 +3309,183 @@ function reporteProveedor(provId){
 
 function generarPDF(){
   var provFil=ge("pdf-prov").value, estadoFil=ge("pdf-estado").value;
-  var desde=ge("pdf-desde").value, hasta=ge("pdf-hasta").value;
-  var oP=ge("pdf-ocultar-precio")&&ge("pdf-ocultar-precio").checked;
-  var provsList=provFil==="todos"?DB.provs:DB.provs.filter(function(p){ return p.id===provFil; });
-  var css='body{font-family:Arial,sans-serif;font-size:12px;color:#111;margin:20px}';
-  css+='h1{font-size:18px;margin-bottom:4px}';
-  css+='h2{font-size:15px;margin:22px 0 4px;padding:6px 10px;background:#f5f0e8;border-left:4px solid #c9a96e;color:#5a3e10}';
-  css+='h3{font-size:12px;margin:12px 0 4px;color:#444}';
-  css+='table{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:11px}';
-  css+='th{background:#f5f0e8;padding:5px 8px;text-align:left;border:1px solid #ddd;font-size:10px}';
-  css+='td{padding:4px 8px;border:1px solid #eee}tr:nth-child(even){background:#fafaf8}';
+  // Columnas opcionales. El reporte base NO las incluye; el costo del proveedor
+  // sí aparece siempre, y los totales acumulados de ventas también.
+  var marcada=function(id){ var e=ge(id); return !!(e&&e.checked); };
+  var incPrecio=marcada("pdf-inc-precio"), incEpoca=marcada("pdf-inc-epoca");
+  var incTalla=marcada("pdf-inc-talla"), incNotas=marcada("pdf-inc-notas");
+  var extras=(incPrecio?1:0)+(incEpoca?1:0)+(incTalla?1:0)+(incNotas?1:0);
+  // La hoja se queda vertical: para que quepan las columnas extra sin apretarse,
+  // la letra y el relleno de la tabla se reducen conforme se agregan columnas.
+  var fTabla = extras>=3 ? 9 : (extras===2 ? 10 : 11);
+  var padTabla = extras>=3 ? "3px 5px" : (extras===2 ? "3px 6px" : "4px 8px");
+  // Encabezado y fila de los bloques de inventario, con las columnas elegidas.
+  function thInv(conCant){
+    var t='<tr><th>Clave</th><th>Descripcion</th>';
+    if(incEpoca) t+='<th>Epoca</th>';
+    if(incTalla) t+='<th>Talla</th>';
+    if(conCant) t+='<th>Cant.</th>';
+    if(incPrecio) t+='<th>Precio venta</th>';
+    t+='<th>Costo prov.</th><th>Fecha ingreso</th>';
+    if(incNotas) t+='<th class="cnotas">Notas</th>';
+    return t+'</tr>';
+  }
+  function trInv(it,conCant,estiloFila){
+    var t='<tr'+(estiloFila||'')+'><td><b>'+esc(it.sku)+'</b></td><td>'+esc(it.descripcion)+'</td>';
+    if(incEpoca) t+='<td>'+esc(it.epoca||"")+'</td>';
+    if(incTalla) t+='<td>'+esc(it.talla||"")+'</td>';
+    if(conCant) t+='<td style="text-align:center">'+(it.cantidad||0)+'</td>';
+    if(incPrecio) t+='<td><b>$'+Math.round(it.precioVenta||0)+'</b></td>';
+    t+='<td>$'+Math.round(it.costoProveedor||0)+'</td><td>'+esc(mesAnioAbrev(it.fechaIngreso))+'</td>';
+    if(incNotas) t+='<td class="cnotas">'+esc(it.notas||"")+'</td>';
+    return t+'</tr>';
+  }
+  var provsList=provFil==="todos"?provsAlfabetico():DB.provs.filter(function(p){ return p.id===provFil; });
+  var periodoTxt=periodoVigenteTexto();
+  var apartadasMap=itemsApartados();
+  // Este reporte se imprime SIEMPRE en blanco y negro: no usa ningun color, solo
+  // grises, bordes y negritas para separar las secciones. Asi sale igual en
+  // cualquier impresora y no depende de que el navegador imprima los fondos.
+  var css='body{font-family:Arial,sans-serif;font-size:12px;color:#000;margin:20px}';
+  css+='h1{font-size:18px;margin-bottom:4px;color:#000}';
+  css+='h2{font-size:15px;margin:22px 0 4px;padding:6px 10px;background:#ededed;border-left:4px solid #000;color:#000}';
+  css+='h3{font-size:12px;margin:12px 0 4px;color:#000}';
+  css+='table{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:'+fTabla+'px;table-layout:auto}';
+  css+='th{background:#ededed;color:#000;padding:'+padTabla+';text-align:left;border:1px solid #999;font-size:'+(fTabla-1)+'px}';
+  css+='td{padding:'+padTabla+';border:1px solid #ccc;vertical-align:top}tr:nth-child(even){background:#f6f6f6}';
+  // La columna de notas lleva texto largo: se deja partir y no acapara el ancho.
+  css+='.cnotas{max-width:150px;word-break:break-word;white-space:normal;color:#333}';
   css+='.total{font-weight:700;font-size:13px;margin:4px 0 12px}';
-  css+='.badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px}';
-  css+='.avail{background:#e8f5e9;color:#2e7d32}.sold{background:#fce4ec;color:#c62828}';
+  css+='.badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;color:#000}';
+  // Los tres bloques se distinguen por el borde y el relleno gris, no por color:
+  // disponibles con borde solido, apartadas con borde punteado (pendientes) y
+  // vendidas con relleno gris oscuro. El texto de cada etiqueta ya las nombra.
+  css+='.avail{background:#fff;border:1px solid #000}';
+  css+='.resv{background:#f2f2f2;border:1px dashed #000}';
+  css+='.sold{background:#d9d9d9;border:1px solid #666;color:#000}';
+  css+='.nota{color:#333;font-size:10.5px;margin:0 0 10px;font-style:italic}';
   css+='@page{margin:12mm 10mm}';
   css+='@media print{body{margin:0}}';
-  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'<\/style><\/head><body>';
+  // El titulo nombra al proveedor especifico cuando se eligio uno solo, mas el
+  // periodo que el reporte cubre. Es tambien el nombre con el que el navegador
+  // guarda el PDF, asi que dos reportes distintos ya no salen con el mismo nombre.
+  var tituloDoc = provsList.length===1
+    ? provsList[0].nombre+" - Reporte de proveedor - "+periodoTxt
+    : "Reporte por proveedor - "+periodoTxt;
+  var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+esc(tituloDoc)+'<\/title><style>'+css+'<\/style><\/head><body>';
   var logoPdf=(DB.config&&DB.config.logo)||"";
-  if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;border-radius:8px;object-fit:cover;float:right;margin-top:-4px">';
+  // El logotipo tambien va en escala de grises para no romper el blanco y negro.
+  if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;border-radius:8px;object-fit:cover;float:right;margin-top:-4px;filter:grayscale(100%)">';
   doc+='<h1>Jardín de Hallazgos</h1>';
-  doc+='<p style="color:#666;font-size:11px;margin-bottom:4px">Reporte generado: '+hoy()+' | Ventas: '+desde+' al '+hasta+'</p>';
+  doc+='<p style="font-size:13px;font-weight:700;color:#000;margin-bottom:3px">'+esc(tituloDoc)+'</p>';
+  doc+='<p style="color:#444;font-size:11px;margin-bottom:4px">Reporte generado: '+hoy()+' | Ventas del periodo vigente: '+esc(periodoTxt)+'</p>';
   var grandDisp=0,grandVentas=0;
   for(var pi=0;pi<provsList.length;pi++){
     var p=provsList[pi];
     var items=DB.items.filter(function(it){ return it.proveedorId===p.id; });
     var disponibles=items.filter(function(it){ return (it.cantidad||0)>0; });
-    var agotados=items.filter(function(it){ return (it.cantidad||0)===0; });
-    var ventas=DB.ventas.filter(function(v){ return !v.cancelacion&&v.fecha>=desde&&v.fecha<=hasta&&v.lineas.some(function(l){ var it=getItem(l.itemId); return it&&it.proveedorId===p.id; }); });
+    // Una pieza en cantidad 0 puede estar VENDIDA o solo APARTADA. El apartado
+    // descuenta el stock al crearse, asi que sin esta separacion una pieza
+    // reservada y aun no pagada se reportaba como vendida.
+    var apartadas=items.filter(function(it){ return (it.cantidad||0)===0 && apartadasMap[it.id]; });
+    var sinExistencia=items.filter(function(it){ return (it.cantidad||0)===0 && !apartadasMap[it.id]; });
+    // Ventas COMPLETADAS del periodo vigente. El proveedor de cada linea se lee
+    // del dato guardado en la venta, no del inventario, para que la pieza cuente
+    // aunque ya se haya eliminado; el precio se prorratea con el descuento real.
+    var ventas=DB.ventas.filter(function(v){
+      if(v.cancelacion) return false;
+      return v.lineas.some(function(l){ return !l.cancelada && datosLineaVenta(l).provId===p.id; });
+    });
     var totalVentas=0;
-    for(var vi=0;vi<ventas.length;vi++) for(var li=0;li<ventas[vi].lineas.length;li++){ var l=ventas[vi].lineas[li],it=getItem(l.itemId); if(it&&it.proveedorId===p.id&&!l.cancelada) totalVentas+=l.precio*l.cantidad; }
-    doc+='<h2>'+esc(p.nombre)+'<span style="font-size:11px;font-weight:400;margin-left:10px;color:#888">'+(p.tipo==="consignacion"?"Consignacion":"Compra directa")+'</span></h2>';
-    if(estadoFil!=="vendidos"&&disponibles.length){
+    for(var vi=0;vi<ventas.length;vi++) for(var li=0;li<ventas[vi].lineas.length;li++){
+      var l=ventas[vi].lineas[li];
+      if(l.cancelada) continue;
+      if(datosLineaVenta(l).provId!==p.id) continue;
+      totalVentas+=precioEfectivoLinea(ventas[vi],l)*l.cantidad;
+    }
+    // Cada pieza aparece UNA SOLA VEZ en el reporte. Las vendidas en el periodo
+    // se listan en "Ventas completadas" y se sacan del bloque de sin existencia,
+    // donde antes salian repetidas. Se comparan por id y tambien por clave,
+    // porque una pieza recreada en el inventario cambia de id pero no de clave.
+    var vendidasEnPeriodo={};
+    for(var vi=0;vi<ventas.length;vi++) for(var li=0;li<ventas[vi].lineas.length;li++){
+      var lv0=ventas[vi].lineas[li];
+      if(lv0.cancelada) continue;
+      var d0=datosLineaVenta(lv0);
+      if(d0.provId!==p.id) continue;
+      if(lv0.itemId) vendidasEnPeriodo["id:"+lv0.itemId]=true;
+      if(d0.sku) vendidasEnPeriodo["sku:"+String(d0.sku).trim().toUpperCase()]=true;
+    }
+    var agotados=sinExistencia.filter(function(it){
+      return !vendidasEnPeriodo["id:"+it.id] && !vendidasEnPeriodo["sku:"+String(it.sku||"").trim().toUpperCase()];
+    });
+    doc+='<h2>'+esc(p.nombre)+'<span style="font-size:11px;font-weight:400;margin-left:10px;color:#555">'+(p.tipo==="consignacion"?"Consignacion":"Compra directa")+'</span></h2>';
+    if((estadoFil==="todos"||estadoFil==="disponibles")&&disponibles.length){
       doc+='<h3><span class="badge avail">Disponibles: '+disponibles.length+' piezas</span></h3>';
-      doc+='<table><tr><th>Clave</th><th>Descripcion</th><th>Cant.</th>'+(oP?'':'<th>Precio venta</th>')+'<th>Costo prov.</th><th>Fecha ingreso</th></tr>';
+      doc+='<table>'+thInv(true);
       var totalValDisp=0;
-      for(var ii=0;ii<disponibles.length;ii++){ var it2=disponibles[ii]; totalValDisp+=(it2.precioVenta||0)*(it2.cantidad||0); doc+='<tr><td><b>'+esc(it2.sku)+'</b></td><td>'+esc(it2.descripcion)+'</td><td style="text-align:center">'+it2.cantidad+'</td>'+(oP?'':'<td><b>$'+Math.round(it2.precioVenta)+'</b></td>')+'<td>$'+Math.round(it2.costoProveedor)+'</td><td>'+esc(it2.fechaIngreso||"")+'</td></tr>'; }
+      for(var ii=0;ii<disponibles.length;ii++){ var it2=disponibles[ii]; totalValDisp+=(it2.precioVenta||0)*(it2.cantidad||0); doc+=trInv(it2,true); }
       doc+='</table>';
-      if(!oP) doc+='<p class="total">Valor disponible: $'+Math.round(totalValDisp)+'</p>';
+      // Es la suma de precios de VENTA, asi que acompana a esa columna opcional.
+      if(incPrecio) doc+='<p class="total">Valor disponible: $'+Math.round(totalValDisp)+'</p>';
       grandDisp+=totalValDisp;
     }
-    if(estadoFil!=="disponibles"&&agotados.length){
-      doc+='<h3><span class="badge sold">Agotados/Vendidos: '+agotados.length+' piezas</span></h3>';
-      doc+='<table><tr><th>Clave</th><th>Descripcion</th>'+(oP?'':'<th>Precio venta</th>')+'<th>Costo prov.</th><th>Fecha ingreso</th></tr>';
-      for(var ii=0;ii<agotados.length;ii++){ var it3=agotados[ii]; doc+='<tr style="color:#999"><td>'+esc(it3.sku)+'</td><td>'+esc(it3.descripcion)+'</td>'+(oP?'':'<td>$'+Math.round(it3.precioVenta)+'</td>')+'<td>$'+Math.round(it3.costoProveedor)+'</td><td>'+esc(it3.fechaIngreso||"")+'</td></tr>'; }
+    // Bloque de piezas APARTADAS: reservadas por un cliente, pendientes de
+    // liquidar. Se listan para que el proveedor sepa donde esta su mercancia,
+    // pero NO suman a ningun total: esas ventas todavia no estan completadas.
+    if((estadoFil==="todos"||estadoFil==="apartadas")&&apartadas.length){
+      doc+='<h3><span class="badge resv">Apartadas: '+apartadas.length+' pieza'+(apartadas.length===1?"":"s")+'</span></h3>';
+      doc+='<p class="nota">Reservadas por un cliente y pendientes de liquidar. No se incluyen en el total de ventas.</p>';
+      doc+='<table>'+thInv(false);
+      for(var ia=0;ia<apartadas.length;ia++) doc+=trInv(apartadas[ia],false);
+      doc+='</table>';
+    }
+    if((estadoFil==="todos"||estadoFil==="vendidos")&&agotados.length){
+      // Ya no dice "Vendidos": las vendidas del periodo estan en su propia
+      // seccion. Aqui quedan las que no tienen existencia por otra razon
+      // (vendidas en un periodo ya cerrado, por ejemplo).
+      doc+='<h3><span class="badge sold">Sin existencia: '+agotados.length+' pieza'+(agotados.length===1?"":"s")+'</span></h3>';
+      doc+='<p class="nota">Sin existencia en inventario y sin venta registrada en el periodo vigente.</p>';
+      doc+='<table>'+thInv(false);
+      for(var ii=0;ii<agotados.length;ii++) doc+=trInv(agotados[ii],false,' style="color:#555"');
       doc+='</table>';
     }
     if(ventas.length){
-      doc+='<h3>Ventas del periodo</h3><table><tr><th>Fecha</th><th>Clave</th><th>Descripcion</th>'+(oP?'':'<th>Precio</th><th>Total</th>')+'<th>Pago</th></tr>';
-      for(var vi=0;vi<ventas.length;vi++){ var v=ventas[vi]; for(var li=0;li<v.lineas.length;li++){ var lv=v.lineas[li],itv=getItem(lv.itemId); if(!itv||itv.proveedorId!==p.id||lv.cancelada) continue; doc+='<tr><td>'+v.fecha+'</td><td><b>'+esc(itv.sku)+'</b></td><td>'+esc(itv.descripcion)+'</td>'+(oP?'':'<td>$'+Math.round(lv.precio)+'</td><td><b>$'+Math.round(lv.precio*lv.cantidad)+'</b></td>')+'<td>'+(v.mpago||"efectivo")+'</td></tr>'; } }
-      doc+='</table><p class="total">Total ventas periodo: $'+Math.round(totalVentas)+'</p>';
+      doc+='<h3>Ventas completadas del periodo</h3><table><tr><th>Fecha</th><th>Clave</th><th>Descripcion</th><th>Cant.</th>'+(incPrecio?'<th>Precio</th><th>Total</th>':'')+'</tr>';
+      for(var vi=0;vi<ventas.length;vi++){
+        var v=ventas[vi];
+        for(var li=0;li<v.lineas.length;li++){
+          var lv=v.lineas[li];
+          if(lv.cancelada) continue;
+          var dv=datosLineaVenta(lv);
+          if(dv.provId!==p.id) continue;
+          var pu=precioEfectivoLinea(v,lv);
+          doc+='<tr><td>'+v.fecha+'</td><td><b>'+esc(dv.sku)+'</b></td><td>'+esc(dv.desc)+'</td><td style="text-align:center">'+lv.cantidad+'</td>'+(incPrecio?'<td>$'+Math.round(pu)+'</td><td><b>$'+Math.round(pu*lv.cantidad)+'</b></td>':'')+'</tr>';
+        }
+      }
+      doc+='</table><p class="total">Total ventas completadas: $'+Math.round(totalVentas)+'</p>';
       grandVentas+=totalVentas;
-    } else { doc+='<p style="color:#999;font-size:11px;margin-bottom:12px">Sin ventas en el periodo.</p>'; }
+    } else { doc+='<p style="color:#555;font-size:11px;margin-bottom:12px">Sin ventas completadas en el periodo vigente'+(apartadas.length?' ('+apartadas.length+' pieza'+(apartadas.length===1?"":"s")+' apartada'+(apartadas.length===1?"":"s")+', pendiente'+(apartadas.length===1?"":"s")+' de liquidar)':'')+'.</p>'; }
   }
   // Si el reporte es de UN solo proveedor de consignacion, anexar leyenda de Clausula Segunda + fechas + firmas
   if(provsList.length===1 && provsList[0].tipo==="consignacion"){
     var pC=provsList[0];
     var nomC=(pC.nombreCompleto||"").trim()||pC.nombre;
-    doc+='<div style="margin-top:18px;padding:10px 12px;background:#f9f6f0;border:1px solid #e5ddd0;border-radius:5px;font-size:10.5px;line-height:1.5;text-align:justify">Este reporte forma parte integrante del Contrato de Consignación celebrado entre '+esc(nomC)+' y Jardín de Hallazgos, conforme a su Cláusula Segunda. Al firmar de conformidad, ambas partes confirman que la mercancía aquí descrita fue entregada y recibida en las condiciones señaladas.<\/div>';
+    doc+='<div style="margin-top:18px;padding:10px 12px;background:#f6f6f6;border:1px solid #bbb;border-radius:5px;font-size:10.5px;line-height:1.5;text-align:justify">Este reporte forma parte integrante del Contrato de Consignación celebrado entre '+esc(nomC)+' y Jardín de Hallazgos, conforme a su Cláusula Segunda. Al firmar de conformidad, ambas partes confirman que la mercancía aquí descrita fue entregada y recibida en las condiciones señaladas.<\/div>';
     doc+='<div style="margin-top:14px;font-size:11px">';
     if(pC.fechaContrato) doc+='<div>Contrato de consignación firmado el: <b>'+pC.fechaContrato+'<\/b><\/div>';
-    else doc+='<div style="color:#b45309">Contrato de consignación <b>pendiente de firma<\/b><\/div>';
+    else doc+='<div style="color:#000">Contrato de consignación <b>pendiente de firma<\/b><\/div>';
     doc+='<div>Fecha de impresión de este reporte: <b>'+hoy()+'<\/b><\/div><\/div>';
     doc+='<div style="margin-top:40px;display:flex;justify-content:space-between;gap:40px">';
     doc+='<div style="flex:1;text-align:center"><div style="border-top:1px solid #000;margin-top:36px;padding-top:5px;font-size:11px">EL PROVEEDOR<\/div><\/div>';
     doc+='<div style="flex:1;text-align:center"><div style="border-top:1px solid #000;margin-top:36px;padding-top:5px;font-size:11px">LA TIENDA (Jardín de Hallazgos)<\/div><\/div>';
     doc+='<\/div>';
   }
-  doc+='<hr style="margin:20px 0;border-color:#ddd">';
-  if(!oP) doc+='<p class="total">TOTAL VALOR INVENTARIO ACTIVO: $'+Math.round(grandDisp)+'</p>';
-  doc+='<p class="total">TOTAL VENTAS PERIODO: $'+Math.round(grandVentas)+'</p>';
+  doc+='<hr style="margin:20px 0;border:0;border-top:1px solid #999">';
+  if(incPrecio) doc+='<p class="total">TOTAL VALOR INVENTARIO DISPONIBLE: $'+Math.round(grandDisp)+'</p>';
+  // El total refleja unicamente ventas COMPLETADAS. Las piezas apartadas quedan
+  // pendientes y se listan arriba, pero no entran aqui.
+  doc+='<p class="total">TOTAL VENTAS COMPLETADAS ('+esc(periodoTxt)+'): $'+Math.round(grandVentas)+'</p>';
   doc+='<\/body><\/html>';
   CM();
   var w=window.open("","_blank","width=900,height=700");
@@ -2987,7 +3630,22 @@ function restaurar(){ ge("frest").click(); }
 
 // ── INIT ────────────────────────────────────────────────────────────────────────
 ge("mbg").addEventListener("click",function(e){ if(e.target===ge("mbg")) CM(); });
-ge("ib").addEventListener("input",RI);
+// El buscador espera a que se deje de teclear antes de redibujar. Al filtrar no
+// hay limite de resultados, asi que redibujar con cada letra podia significar
+// cientos de filas por tecla. La espera es corta y no cambia lo que se muestra.
+var _riEspera=null;
+ge("ib").addEventListener("input",function(){
+  if(_riEspera) clearTimeout(_riEspera);
+  _riEspera=setTimeout(function(){ _riEspera=null; RI(); },250);
+});
+// Si la pantalla cruza el ancho de celular (al girar el telefono, por ejemplo),
+// se vuelve a dibujar para que aparezcan o se retiren las tarjetas moviles.
+try{
+  var _mqInv=window.matchMedia("(max-width:768px)");
+  var _onMqInv=function(){ RI(); };
+  if(_mqInv.addEventListener) _mqInv.addEventListener("change",_onMqInv);
+  else if(_mqInv.addListener) _mqInv.addListener(_onMqInv);
+}catch(e){}
 ge("pb").addEventListener("input",PR);
 ge("epb-busq").addEventListener("input",function(){ epbRenderLista(this.value); });
 ge("epb-cp").addEventListener("input",epbPrev);

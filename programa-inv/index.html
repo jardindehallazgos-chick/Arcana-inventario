@@ -149,6 +149,21 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
   .inp{font-size:16px;padding:10px 12px} /* 16px prevents iOS zoom */
   .btn,.btna,.btnr,.btno{padding:9px 13px;font-size:13px}
   .btns{padding:7px 11px;font-size:12px}
+  /* Reportes: botones del encabezado en renglones, sin cortarse */
+  .rep-acciones{width:100%}
+  .rep-acciones .btn{flex:1 1 auto;white-space:nowrap}
+  /* Tablas de Reportes: cada fila se vuelve una tarjeta en celular */
+  .tbl-stack thead{display:none}
+  .tbl-stack,.tbl-stack tbody{display:block;width:100%}
+  .tbl-stack tr{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;padding:11px 13px;border-bottom:1px solid #2a2620}
+  .tbl-stack td{display:block;padding:0;border:none}
+  .tbl-stack tr td.full{flex-basis:100%;grid-column:1/-1}
+  .tbl-stack td[data-label]::before{content:attr(data-label);display:block;font-size:9.5px;color:#6b6358;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1px}
+  .tbl-stack tr:hover td{background:none}
+  /* Por proveedor: nombre y tipo arriba; cuatro cifras en una fila debajo */
+  .tbl-prov tr{display:grid;grid-template-columns:repeat(4,1fr);gap:6px 10px}
+  .tbl-prov td:nth-child(1){grid-column:1/4;font-size:14px}
+  .tbl-prov td:nth-child(2){grid-column:4/5;text-align:right}
 }
 @media(min-width:769px){
   .mob-only{display:none!important}
@@ -160,8 +175,13 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
 #acclock-err{color:#f87171;font-size:12px;margin-top:8px;min-height:16px}
 #logo-img{height:26px;width:26px;border-radius:6px;object-fit:cover;margin-right:2px;display:none;vertical-align:middle}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 </head>
 <body>
+<div id="sync-pendiente-alerta" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#7a2020;color:#fff;padding:9px 14px;font-size:13px;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.4);align-items:center;justify-content:center;gap:10px">
+  <span style="font-size:16px">&#9888;&#65039;</span>
+  <span><b>Hay cambios sin guardar en internet.</b> No cierres ni recargues esta pantalla hasta que el indicador diga "Sincronizado".</span>
+</div>
 <div id="apa-alerta" style="display:none;position:fixed;top:10px;right:10px;z-index:9000;background:#1a1610;border:1px solid #f59e0b66;border-radius:10px;padding:9px 12px;max-width:270px;box-shadow:0 4px 16px rgba(0,0,0,.5);font-size:12px">
   <div style="display:flex;align-items:center;gap:8px">
     <span style="font-size:15px">&#9200;</span>
@@ -230,6 +250,10 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
               </select>
             </div>
             <div id="cdesc-monto" style="display:none;justify-content:space-between;margin-bottom:9px"></div>
+            <div class="fld" style="margin-bottom:11px">
+              <label class="lbl">Nota (opcional)</label>
+              <input type="text" class="inp" id="cnota" maxlength="50" placeholder="Ej. cliente frecuente, pagó en 2 partes..." style="height:32px;padding:0 10px;font-size:12px"/>
+            </div>
             <div class="fld" style="margin-bottom:11px">
               <label class="lbl">Metodo de pago</label>
               <select class="inp" id="mpago" style="height:36px;padding:0 10px">
@@ -301,7 +325,7 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
       <button class="btna" onclick="aItem(null)">+ Nueva prenda</button>
     </div>
     <div id="ic" class="cnt"></div>
-    <div class="box"><div class="tw"><table class="tbl">
+    <div class="box desk-only"><div class="tw"><table class="tbl">
       <thead><tr>
         <th style="width:36px"><input type="checkbox" id="chk-all" style="cursor:pointer;width:15px;height:15px;accent-color:#c9a96e"/></th>
         <th>Clave</th><th>Descripcion</th><th>Categoria</th><th>Epoca</th><th>Talla</th><th>Cant.</th>
@@ -348,11 +372,10 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
   </div>
 
   <div id="tab-reportes" class="tab">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:15px">
       <div class="h2" style="margin:0">Reportes</div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btns" onclick="expCSV()">Exportar Excel (CSV)</button><button class="btn btns" onclick="expProvPDF()">Exportar PDF por proveedor</button>
-        <button class="btn btns" onclick="reporteGeneralVentas()">Reporte general de ventas</button><button class="btn btns" onclick="reporteConsignatarios()">Reporte de consignatarios</button>
+      <div class="rep-acciones" style="display:flex;flex-wrap:wrap;gap:8px">
+        <button class="btn btns" onclick="expProvPDF()">Exportar PDF por proveedor</button>
         <button class="btn btns" onclick="aLogo()">Subir logotipo</button>
         <button class="btn btns" onclick="cambiarPassAcceso()">Cambiar contrasena de acceso</button>
         <button class="btn btns" onclick="cambiarPass()">Cambiar contrasena admin</button>
@@ -369,19 +392,19 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
         <option value="todos">Todos los proveedores</option>
       </select>
     </div>
-    <div class="box" style="margin:10px 0 22px"><div class="tw"><table class="tbl">
+    <div class="box" style="margin:10px 0 22px"><div class="tw"><table class="tbl tbl-stack tbl-prov">
       <thead><tr><th>Proveedor</th><th>Tipo</th><th>En tienda</th><th>Ingresos</th><th>Costo</th><th>Ganancia</th></tr></thead>
       <tbody id="rprov"></tbody>
     </table></div></div>
-
-    <div class="h3">Desempeno mensual</div>
-    <div id="rgrafica" class="card" style="margin-bottom:22px"></div>
 
     <div id="checklist-cierre" class="card" style="margin-bottom:22px"></div>
 
     <div class="h3">Historial de ventas por mes</div>
     <div class="sm mut" style="margin-bottom:10px">Cada mes puede descargarse (CSV) y luego cerrarse. Al cerrar un mes, sus ventas salen de los totales activos y su resumen queda guardado en el desempeno mensual.</div>
     <div id="rmeses"></div>
+
+    <div class="h3">Desempeno mensual</div>
+    <div id="rgrafica" class="card" style="margin-bottom:22px"></div>
   </div>
 
 </div><!-- /main -->
