@@ -707,8 +707,30 @@ function RI(){
     var mtl=!ftl||String(it.talla||"")===ftl;
     if(mq&&mcat&&mep&&mtl&&(!fpv||it.proveedorId===fpv)&&ms) list.push(it);
   }
+  // VISTA INICIAL: sin ningun filtro ni busqueda, se dibujan solo los 50
+  // conceptos mas recientes por fecha de ingreso. Con mas de 2000 piezas,
+  // dibujarlas todas tomaba medio segundo cada vez (y el buscador redibuja con
+  // cada tecla). Los filtros y el buscador SIEMPRE revisan el inventario
+  // completo, y cuando hay un filtro activo se muestran todas las coincidencias
+  // sin limite.
+  var hayFiltro = !!(q||fc||fe||ftl||fpv||fs);
+  if(hayFiltro) window._invVerTodo=false; // al filtrar se olvida el "Ver todos"
+  var limitada=false;
+  if(!hayFiltro && !window._invVerTodo && list.length>INV_VISTA_INICIAL){
+    list=list.slice().sort(function(a,b){
+      return String(b.fechaIngreso||"").localeCompare(String(a.fechaIngreso||""));
+    }).slice(0,INV_VISTA_INICIAL);
+    limitada=true;
+  }
   var pz=0; for(var i=0;i<list.length;i++) pz+=list[i].cantidad||0;
-  ge("ic").textContent=list.length+" de "+DB.items.length+" conceptos - "+pz+" piezas";
+  if(limitada){
+    var pzTot=0; for(var i=0;i<DB.items.length;i++) pzTot+=DB.items[i].cantidad||0;
+    ge("ic").innerHTML='Mostrando los '+INV_VISTA_INICIAL+' conceptos mas recientes de '+DB.items.length+
+      ' &middot; '+pzTot+' piezas en inventario &middot; usa el buscador o los filtros para encontrar el resto. '+
+      '<span onclick="invVerTodo()" style="color:#c9a96e;cursor:pointer;text-decoration:underline">Ver todos</span>';
+  } else {
+    ge("ic").textContent=list.length+" de "+DB.items.length+" conceptos - "+pz+" piezas";
+  }
   var tb=ge("itb");
   if(!list.length){ tb.innerHTML='<tr><td colspan="13" style="padding:36px;text-align:center;color:#4a4540">Sin resultados</td></tr>'; return; }
   var h="";
@@ -726,14 +748,24 @@ function RI(){
     h+='<td class="mut sm">'+fmt(it.costoProveedor)+'</td>';
     h+='<td class="'+(g>=0?"gp":"gn")+' sm">'+fmt(g)+'</td>';
     h+='<td class="gold">'+fmt(it.precioVenta)+'</td>';
-    h+='<td class="mut sm">'+(it.fechaIngreso||"")+'</td>';
+    h+='<td class="mut sm">'+mesAnioAbrev(it.fechaIngreso)+'</td>';
     h+='<td style="white-space:nowrap"><button class="btn btns" onclick="aDet(\''+it.id+'\')">Ver</button> <button class="btn btns" onclick="aItem(\''+it.id+'\')">Editar</button> <button class="btn btns" onclick="eFromInv(\''+it.id+'\')">Etiq</button></td>';
     h+='</tr>';
   }
   tb.innerHTML=h;
-  // Render mobile cards
-  renderMobCards(list);
+  // Las tarjetas de la vista movil estan ocultas por CSS en computadora, pero
+  // antes se armaban igual: era la mitad del tiempo de dibujado, desperdiciada.
+  // Ahora solo se arman cuando la pantalla realmente las usa.
+  if(esVistaMovil()) renderMobCards(list);
+  else { var mc=ge("inv-cards"); if(mc && mc.innerHTML) mc.innerHTML=""; }
 }
+// Cuantos conceptos se muestran al entrar a Inventario sin filtros.
+var INV_VISTA_INICIAL=50;
+function esVistaMovil(){
+  try{ return window.matchMedia("(max-width:768px)").matches; }catch(e){ return false; }
+}
+// Quita el limite de la vista inicial hasta que se aplique algun filtro.
+function invVerTodo(){ window._invVerTodo=true; RI(); }
 
 function renderMobCards(list){
   var el=ge("inv-cards"); if(!el) return;
@@ -900,7 +932,7 @@ function delItem(id){
 function aDet(id){
   var it=getItem(id); if(!it) return;
   var pv=getProv(it.proveedorId), f=fiscal(it.precioVenta||0), g=f.neto-(it.costoProveedor||0);
-  var rows=[["Clave",it.sku],["Categoria",it.categoria||""],["Epoca",it.epoca||""],["Cantidad",it.cantidad],["Proveedor",pv?pv.nombre:""],["Tipo",pv?(pv.tipo==="consignacion"?"Consignacion":"Compra directa"):""],["Fecha ingreso",it.fechaIngreso||""]];
+  var rows=[["Clave",it.sku],["Categoria",it.categoria||""],["Epoca",it.epoca||""],["Cantidad",it.cantidad],["Proveedor",pv?pv.nombre:""],["Tipo",pv?(pv.tipo==="consignacion"?"Consignacion":"Compra directa"):""],["Fecha ingreso",mesAnioAbrev(it.fechaIngreso)]];
   var h='<p class="mut it" style="font-size:14px;margin-bottom:14px">'+esc(it.descripcion)+'</p><div class="g2" style="gap:7px 18px;margin-bottom:13px">';
   for(var i=0;i<rows.length;i++) h+='<div style="border-bottom:1px solid #1e1c18;padding-bottom:4px"><div class="lbl">'+rows[i][0]+'</div><div style="font-size:13px">'+rows[i][1]+'</div></div>';
   h+='</div><div class="fb"><div class="sm" style="color:#6b6358;text-transform:uppercase;margin-bottom:5px">Desglose de '+fmt(it.precioVenta)+'</div>'+
@@ -2873,8 +2905,22 @@ function expProvPDF(){
   h+='</div>';
   h+='<div class="g2" style="margin-bottom:12px">';
   h+='<div class="fld"><label class="lbl">Proveedor</label><select class="inp" id="pdf-prov">'+po+'</select></div>';
-  h+='<div class="fld"><label class="lbl">Inventario</label><select class="inp" id="pdf-estado"><option value="todos">Disponibles, apartadas y vendidas (separadas)</option><option value="disponibles">Solo disponibles</option><option value="apartadas">Solo apartadas</option><option value="vendidos">Solo vendidas/agotadas</option></select></div></div>';
-  h+='<div class="fld"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#a09480"><input type="checkbox" id="pdf-ocultar-precio" style="accent-color:#c9a96e;width:15px;height:15px"/> Ocultar columna de precio de venta</label></div>';
+  h+='<div class="fld"><label class="lbl">Inventario</label><select class="inp" id="pdf-estado"><option value="todos">Disponibles, apartadas y sin existencia (separadas)</option><option value="disponibles">Solo disponibles</option><option value="apartadas">Solo apartadas</option><option value="vendidos">Solo sin existencia</option></select></div></div>';
+  // Columnas opcionales: el reporte base sale SIN ellas (clave, descripcion,
+  // cantidad, costo del proveedor y fecha de ingreso). El costo del proveedor
+  // nunca es opcional porque es la cifra que se le paga. Epoca, talla y notas
+  // se toman del inventario.
+  var casilla=function(id,txt){
+    return '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#a09480">'+
+      '<input type="checkbox" id="'+id+'" style="accent-color:#c9a96e;width:15px;height:15px"/> '+txt+'</label>';
+  };
+  h+='<div class="fld"><label class="lbl">Columnas adicionales (el reporte base no las incluye)</label>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;padding:4px 2px">';
+  h+=casilla("pdf-inc-precio","Precio de venta");
+  h+=casilla("pdf-inc-epoca","Epoca");
+  h+=casilla("pdf-inc-talla","Talla");
+  h+=casilla("pdf-inc-notas","Notas");
+  h+='</div></div>';
   h+='<div style="display:flex;justify-content:space-between;padding-top:7px"><button class="btn" onclick="CM()">Cancelar</button><button class="btna" onclick="generarPDF()">Generar PDF</button></div>';
   OM("Exportar PDF por proveedor",h);
 }
@@ -3263,22 +3309,61 @@ function reporteProveedor(provId){
 
 function generarPDF(){
   var provFil=ge("pdf-prov").value, estadoFil=ge("pdf-estado").value;
-  var oP=ge("pdf-ocultar-precio")&&ge("pdf-ocultar-precio").checked;
+  // Columnas opcionales. El reporte base NO las incluye; el costo del proveedor
+  // sí aparece siempre, y los totales acumulados de ventas también.
+  var marcada=function(id){ var e=ge(id); return !!(e&&e.checked); };
+  var incPrecio=marcada("pdf-inc-precio"), incEpoca=marcada("pdf-inc-epoca");
+  var incTalla=marcada("pdf-inc-talla"), incNotas=marcada("pdf-inc-notas");
+  var extras=(incPrecio?1:0)+(incEpoca?1:0)+(incTalla?1:0)+(incNotas?1:0);
+  // La hoja se queda vertical: para que quepan las columnas extra sin apretarse,
+  // la letra y el relleno de la tabla se reducen conforme se agregan columnas.
+  var fTabla = extras>=3 ? 9 : (extras===2 ? 10 : 11);
+  var padTabla = extras>=3 ? "3px 5px" : (extras===2 ? "3px 6px" : "4px 8px");
+  // Encabezado y fila de los bloques de inventario, con las columnas elegidas.
+  function thInv(conCant){
+    var t='<tr><th>Clave</th><th>Descripcion</th>';
+    if(incEpoca) t+='<th>Epoca</th>';
+    if(incTalla) t+='<th>Talla</th>';
+    if(conCant) t+='<th>Cant.</th>';
+    if(incPrecio) t+='<th>Precio venta</th>';
+    t+='<th>Costo prov.</th><th>Fecha ingreso</th>';
+    if(incNotas) t+='<th class="cnotas">Notas</th>';
+    return t+'</tr>';
+  }
+  function trInv(it,conCant,estiloFila){
+    var t='<tr'+(estiloFila||'')+'><td><b>'+esc(it.sku)+'</b></td><td>'+esc(it.descripcion)+'</td>';
+    if(incEpoca) t+='<td>'+esc(it.epoca||"")+'</td>';
+    if(incTalla) t+='<td>'+esc(it.talla||"")+'</td>';
+    if(conCant) t+='<td style="text-align:center">'+(it.cantidad||0)+'</td>';
+    if(incPrecio) t+='<td><b>$'+Math.round(it.precioVenta||0)+'</b></td>';
+    t+='<td>$'+Math.round(it.costoProveedor||0)+'</td><td>'+esc(mesAnioAbrev(it.fechaIngreso))+'</td>';
+    if(incNotas) t+='<td class="cnotas">'+esc(it.notas||"")+'</td>';
+    return t+'</tr>';
+  }
   var provsList=provFil==="todos"?provsAlfabetico():DB.provs.filter(function(p){ return p.id===provFil; });
   var periodoTxt=periodoVigenteTexto();
   var apartadasMap=itemsApartados();
-  var css='body{font-family:Arial,sans-serif;font-size:12px;color:#111;margin:20px}';
-  css+='h1{font-size:18px;margin-bottom:4px}';
-  css+='h2{font-size:15px;margin:22px 0 4px;padding:6px 10px;background:#f5f0e8;border-left:4px solid #c9a96e;color:#5a3e10}';
-  css+='h3{font-size:12px;margin:12px 0 4px;color:#444}';
-  css+='table{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:11px}';
-  css+='th{background:#f5f0e8;padding:5px 8px;text-align:left;border:1px solid #ddd;font-size:10px}';
-  css+='td{padding:4px 8px;border:1px solid #eee}tr:nth-child(even){background:#fafaf8}';
+  // Este reporte se imprime SIEMPRE en blanco y negro: no usa ningun color, solo
+  // grises, bordes y negritas para separar las secciones. Asi sale igual en
+  // cualquier impresora y no depende de que el navegador imprima los fondos.
+  var css='body{font-family:Arial,sans-serif;font-size:12px;color:#000;margin:20px}';
+  css+='h1{font-size:18px;margin-bottom:4px;color:#000}';
+  css+='h2{font-size:15px;margin:22px 0 4px;padding:6px 10px;background:#ededed;border-left:4px solid #000;color:#000}';
+  css+='h3{font-size:12px;margin:12px 0 4px;color:#000}';
+  css+='table{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:'+fTabla+'px;table-layout:auto}';
+  css+='th{background:#ededed;color:#000;padding:'+padTabla+';text-align:left;border:1px solid #999;font-size:'+(fTabla-1)+'px}';
+  css+='td{padding:'+padTabla+';border:1px solid #ccc;vertical-align:top}tr:nth-child(even){background:#f6f6f6}';
+  // La columna de notas lleva texto largo: se deja partir y no acapara el ancho.
+  css+='.cnotas{max-width:150px;word-break:break-word;white-space:normal;color:#333}';
   css+='.total{font-weight:700;font-size:13px;margin:4px 0 12px}';
-  css+='.badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px}';
-  css+='.avail{background:#e8f5e9;color:#2e7d32}.sold{background:#fce4ec;color:#c62828}';
-  css+='.resv{background:#fff4e0;color:#9a6200}';
-  css+='.nota{color:#9a6200;font-size:10.5px;margin:0 0 10px;font-style:italic}';
+  css+='.badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;color:#000}';
+  // Los tres bloques se distinguen por el borde y el relleno gris, no por color:
+  // disponibles con borde solido, apartadas con borde punteado (pendientes) y
+  // vendidas con relleno gris oscuro. El texto de cada etiqueta ya las nombra.
+  css+='.avail{background:#fff;border:1px solid #000}';
+  css+='.resv{background:#f2f2f2;border:1px dashed #000}';
+  css+='.sold{background:#d9d9d9;border:1px solid #666;color:#000}';
+  css+='.nota{color:#333;font-size:10.5px;margin:0 0 10px;font-style:italic}';
   css+='@page{margin:12mm 10mm}';
   css+='@media print{body{margin:0}}';
   // El titulo nombra al proveedor especifico cuando se eligio uno solo, mas el
@@ -3289,10 +3374,11 @@ function generarPDF(){
     : "Reporte por proveedor - "+periodoTxt;
   var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+esc(tituloDoc)+'<\/title><style>'+css+'<\/style><\/head><body>';
   var logoPdf=(DB.config&&DB.config.logo)||"";
-  if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;border-radius:8px;object-fit:cover;float:right;margin-top:-4px">';
+  // El logotipo tambien va en escala de grises para no romper el blanco y negro.
+  if(logoPdf) doc+='<img src="'+logoPdf+'" style="width:48px;height:48px;border-radius:8px;object-fit:cover;float:right;margin-top:-4px;filter:grayscale(100%)">';
   doc+='<h1>Jardín de Hallazgos</h1>';
-  doc+='<p style="font-size:13px;font-weight:700;color:#5a3e10;margin-bottom:3px">'+esc(tituloDoc)+'</p>';
-  doc+='<p style="color:#666;font-size:11px;margin-bottom:4px">Reporte generado: '+hoy()+' | Ventas del periodo vigente: '+esc(periodoTxt)+'</p>';
+  doc+='<p style="font-size:13px;font-weight:700;color:#000;margin-bottom:3px">'+esc(tituloDoc)+'</p>';
+  doc+='<p style="color:#444;font-size:11px;margin-bottom:4px">Reporte generado: '+hoy()+' | Ventas del periodo vigente: '+esc(periodoTxt)+'</p>';
   var grandDisp=0,grandVentas=0;
   for(var pi=0;pi<provsList.length;pi++){
     var p=provsList[pi];
@@ -3302,7 +3388,7 @@ function generarPDF(){
     // descuenta el stock al crearse, asi que sin esta separacion una pieza
     // reservada y aun no pagada se reportaba como vendida.
     var apartadas=items.filter(function(it){ return (it.cantidad||0)===0 && apartadasMap[it.id]; });
-    var agotados=items.filter(function(it){ return (it.cantidad||0)===0 && !apartadasMap[it.id]; });
+    var sinExistencia=items.filter(function(it){ return (it.cantidad||0)===0 && !apartadasMap[it.id]; });
     // Ventas COMPLETADAS del periodo vigente. El proveedor de cada linea se lee
     // del dato guardado en la venta, no del inventario, para que la pieza cuente
     // aunque ya se haya eliminado; el precio se prorratea con el descuento real.
@@ -3317,14 +3403,31 @@ function generarPDF(){
       if(datosLineaVenta(l).provId!==p.id) continue;
       totalVentas+=precioEfectivoLinea(ventas[vi],l)*l.cantidad;
     }
-    doc+='<h2>'+esc(p.nombre)+'<span style="font-size:11px;font-weight:400;margin-left:10px;color:#888">'+(p.tipo==="consignacion"?"Consignacion":"Compra directa")+'</span></h2>';
+    // Cada pieza aparece UNA SOLA VEZ en el reporte. Las vendidas en el periodo
+    // se listan en "Ventas completadas" y se sacan del bloque de sin existencia,
+    // donde antes salian repetidas. Se comparan por id y tambien por clave,
+    // porque una pieza recreada en el inventario cambia de id pero no de clave.
+    var vendidasEnPeriodo={};
+    for(var vi=0;vi<ventas.length;vi++) for(var li=0;li<ventas[vi].lineas.length;li++){
+      var lv0=ventas[vi].lineas[li];
+      if(lv0.cancelada) continue;
+      var d0=datosLineaVenta(lv0);
+      if(d0.provId!==p.id) continue;
+      if(lv0.itemId) vendidasEnPeriodo["id:"+lv0.itemId]=true;
+      if(d0.sku) vendidasEnPeriodo["sku:"+String(d0.sku).trim().toUpperCase()]=true;
+    }
+    var agotados=sinExistencia.filter(function(it){
+      return !vendidasEnPeriodo["id:"+it.id] && !vendidasEnPeriodo["sku:"+String(it.sku||"").trim().toUpperCase()];
+    });
+    doc+='<h2>'+esc(p.nombre)+'<span style="font-size:11px;font-weight:400;margin-left:10px;color:#555">'+(p.tipo==="consignacion"?"Consignacion":"Compra directa")+'</span></h2>';
     if((estadoFil==="todos"||estadoFil==="disponibles")&&disponibles.length){
       doc+='<h3><span class="badge avail">Disponibles: '+disponibles.length+' piezas</span></h3>';
-      doc+='<table><tr><th>Clave</th><th>Descripcion</th><th>Cant.</th>'+(oP?'':'<th>Precio venta</th>')+'<th>Costo prov.</th><th>Fecha ingreso</th></tr>';
+      doc+='<table>'+thInv(true);
       var totalValDisp=0;
-      for(var ii=0;ii<disponibles.length;ii++){ var it2=disponibles[ii]; totalValDisp+=(it2.precioVenta||0)*(it2.cantidad||0); doc+='<tr><td><b>'+esc(it2.sku)+'</b></td><td>'+esc(it2.descripcion)+'</td><td style="text-align:center">'+it2.cantidad+'</td>'+(oP?'':'<td><b>$'+Math.round(it2.precioVenta)+'</b></td>')+'<td>$'+Math.round(it2.costoProveedor)+'</td><td>'+esc(it2.fechaIngreso||"")+'</td></tr>'; }
+      for(var ii=0;ii<disponibles.length;ii++){ var it2=disponibles[ii]; totalValDisp+=(it2.precioVenta||0)*(it2.cantidad||0); doc+=trInv(it2,true); }
       doc+='</table>';
-      if(!oP) doc+='<p class="total">Valor disponible: $'+Math.round(totalValDisp)+'</p>';
+      // Es la suma de precios de VENTA, asi que acompana a esa columna opcional.
+      if(incPrecio) doc+='<p class="total">Valor disponible: $'+Math.round(totalValDisp)+'</p>';
       grandDisp+=totalValDisp;
     }
     // Bloque de piezas APARTADAS: reservadas por un cliente, pendientes de
@@ -3333,18 +3436,22 @@ function generarPDF(){
     if((estadoFil==="todos"||estadoFil==="apartadas")&&apartadas.length){
       doc+='<h3><span class="badge resv">Apartadas: '+apartadas.length+' pieza'+(apartadas.length===1?"":"s")+'</span></h3>';
       doc+='<p class="nota">Reservadas por un cliente y pendientes de liquidar. No se incluyen en el total de ventas.</p>';
-      doc+='<table><tr><th>Clave</th><th>Descripcion</th>'+(oP?'':'<th>Precio venta</th>')+'<th>Costo prov.</th><th>Fecha ingreso</th></tr>';
-      for(var ia=0;ia<apartadas.length;ia++){ var itA=apartadas[ia]; doc+='<tr><td><b>'+esc(itA.sku)+'</b></td><td>'+esc(itA.descripcion)+'</td>'+(oP?'':'<td>$'+Math.round(itA.precioVenta)+'</td>')+'<td>$'+Math.round(itA.costoProveedor)+'</td><td>'+esc(itA.fechaIngreso||"")+'</td></tr>'; }
+      doc+='<table>'+thInv(false);
+      for(var ia=0;ia<apartadas.length;ia++) doc+=trInv(apartadas[ia],false);
       doc+='</table>';
     }
     if((estadoFil==="todos"||estadoFil==="vendidos")&&agotados.length){
-      doc+='<h3><span class="badge sold">Agotados/Vendidos: '+agotados.length+' piezas</span></h3>';
-      doc+='<table><tr><th>Clave</th><th>Descripcion</th>'+(oP?'':'<th>Precio venta</th>')+'<th>Costo prov.</th><th>Fecha ingreso</th></tr>';
-      for(var ii=0;ii<agotados.length;ii++){ var it3=agotados[ii]; doc+='<tr style="color:#999"><td>'+esc(it3.sku)+'</td><td>'+esc(it3.descripcion)+'</td>'+(oP?'':'<td>$'+Math.round(it3.precioVenta)+'</td>')+'<td>$'+Math.round(it3.costoProveedor)+'</td><td>'+esc(it3.fechaIngreso||"")+'</td></tr>'; }
+      // Ya no dice "Vendidos": las vendidas del periodo estan en su propia
+      // seccion. Aqui quedan las que no tienen existencia por otra razon
+      // (vendidas en un periodo ya cerrado, por ejemplo).
+      doc+='<h3><span class="badge sold">Sin existencia: '+agotados.length+' pieza'+(agotados.length===1?"":"s")+'</span></h3>';
+      doc+='<p class="nota">Sin existencia en inventario y sin venta registrada en el periodo vigente.</p>';
+      doc+='<table>'+thInv(false);
+      for(var ii=0;ii<agotados.length;ii++) doc+=trInv(agotados[ii],false,' style="color:#555"');
       doc+='</table>';
     }
     if(ventas.length){
-      doc+='<h3>Ventas completadas del periodo</h3><table><tr><th>Fecha</th><th>Clave</th><th>Descripcion</th><th>Cant.</th>'+(oP?'':'<th>Precio</th><th>Total</th>')+'<th>Pago</th></tr>';
+      doc+='<h3>Ventas completadas del periodo</h3><table><tr><th>Fecha</th><th>Clave</th><th>Descripcion</th><th>Cant.</th>'+(incPrecio?'<th>Precio</th><th>Total</th>':'')+'</tr>';
       for(var vi=0;vi<ventas.length;vi++){
         var v=ventas[vi];
         for(var li=0;li<v.lineas.length;li++){
@@ -3353,29 +3460,29 @@ function generarPDF(){
           var dv=datosLineaVenta(lv);
           if(dv.provId!==p.id) continue;
           var pu=precioEfectivoLinea(v,lv);
-          doc+='<tr><td>'+v.fecha+'</td><td><b>'+esc(dv.sku)+'</b></td><td>'+esc(dv.desc)+'</td><td style="text-align:center">'+lv.cantidad+'</td>'+(oP?'':'<td>$'+Math.round(pu)+'</td><td><b>$'+Math.round(pu*lv.cantidad)+'</b></td>')+'<td>'+(v.mpago||"efectivo")+'</td></tr>';
+          doc+='<tr><td>'+v.fecha+'</td><td><b>'+esc(dv.sku)+'</b></td><td>'+esc(dv.desc)+'</td><td style="text-align:center">'+lv.cantidad+'</td>'+(incPrecio?'<td>$'+Math.round(pu)+'</td><td><b>$'+Math.round(pu*lv.cantidad)+'</b></td>':'')+'</tr>';
         }
       }
       doc+='</table><p class="total">Total ventas completadas: $'+Math.round(totalVentas)+'</p>';
       grandVentas+=totalVentas;
-    } else { doc+='<p style="color:#999;font-size:11px;margin-bottom:12px">Sin ventas completadas en el periodo vigente'+(apartadas.length?' ('+apartadas.length+' pieza'+(apartadas.length===1?"":"s")+' apartada'+(apartadas.length===1?"":"s")+', pendiente'+(apartadas.length===1?"":"s")+' de liquidar)':'')+'.</p>'; }
+    } else { doc+='<p style="color:#555;font-size:11px;margin-bottom:12px">Sin ventas completadas en el periodo vigente'+(apartadas.length?' ('+apartadas.length+' pieza'+(apartadas.length===1?"":"s")+' apartada'+(apartadas.length===1?"":"s")+', pendiente'+(apartadas.length===1?"":"s")+' de liquidar)':'')+'.</p>'; }
   }
   // Si el reporte es de UN solo proveedor de consignacion, anexar leyenda de Clausula Segunda + fechas + firmas
   if(provsList.length===1 && provsList[0].tipo==="consignacion"){
     var pC=provsList[0];
     var nomC=(pC.nombreCompleto||"").trim()||pC.nombre;
-    doc+='<div style="margin-top:18px;padding:10px 12px;background:#f9f6f0;border:1px solid #e5ddd0;border-radius:5px;font-size:10.5px;line-height:1.5;text-align:justify">Este reporte forma parte integrante del Contrato de Consignación celebrado entre '+esc(nomC)+' y Jardín de Hallazgos, conforme a su Cláusula Segunda. Al firmar de conformidad, ambas partes confirman que la mercancía aquí descrita fue entregada y recibida en las condiciones señaladas.<\/div>';
+    doc+='<div style="margin-top:18px;padding:10px 12px;background:#f6f6f6;border:1px solid #bbb;border-radius:5px;font-size:10.5px;line-height:1.5;text-align:justify">Este reporte forma parte integrante del Contrato de Consignación celebrado entre '+esc(nomC)+' y Jardín de Hallazgos, conforme a su Cláusula Segunda. Al firmar de conformidad, ambas partes confirman que la mercancía aquí descrita fue entregada y recibida en las condiciones señaladas.<\/div>';
     doc+='<div style="margin-top:14px;font-size:11px">';
     if(pC.fechaContrato) doc+='<div>Contrato de consignación firmado el: <b>'+pC.fechaContrato+'<\/b><\/div>';
-    else doc+='<div style="color:#b45309">Contrato de consignación <b>pendiente de firma<\/b><\/div>';
+    else doc+='<div style="color:#000">Contrato de consignación <b>pendiente de firma<\/b><\/div>';
     doc+='<div>Fecha de impresión de este reporte: <b>'+hoy()+'<\/b><\/div><\/div>';
     doc+='<div style="margin-top:40px;display:flex;justify-content:space-between;gap:40px">';
     doc+='<div style="flex:1;text-align:center"><div style="border-top:1px solid #000;margin-top:36px;padding-top:5px;font-size:11px">EL PROVEEDOR<\/div><\/div>';
     doc+='<div style="flex:1;text-align:center"><div style="border-top:1px solid #000;margin-top:36px;padding-top:5px;font-size:11px">LA TIENDA (Jardín de Hallazgos)<\/div><\/div>';
     doc+='<\/div>';
   }
-  doc+='<hr style="margin:20px 0;border-color:#ddd">';
-  if(!oP) doc+='<p class="total">TOTAL VALOR INVENTARIO DISPONIBLE: $'+Math.round(grandDisp)+'</p>';
+  doc+='<hr style="margin:20px 0;border:0;border-top:1px solid #999">';
+  if(incPrecio) doc+='<p class="total">TOTAL VALOR INVENTARIO DISPONIBLE: $'+Math.round(grandDisp)+'</p>';
   // El total refleja unicamente ventas COMPLETADAS. Las piezas apartadas quedan
   // pendientes y se listan arriba, pero no entran aqui.
   doc+='<p class="total">TOTAL VENTAS COMPLETADAS ('+esc(periodoTxt)+'): $'+Math.round(grandVentas)+'</p>';
@@ -3523,7 +3630,22 @@ function restaurar(){ ge("frest").click(); }
 
 // ── INIT ────────────────────────────────────────────────────────────────────────
 ge("mbg").addEventListener("click",function(e){ if(e.target===ge("mbg")) CM(); });
-ge("ib").addEventListener("input",RI);
+// El buscador espera a que se deje de teclear antes de redibujar. Al filtrar no
+// hay limite de resultados, asi que redibujar con cada letra podia significar
+// cientos de filas por tecla. La espera es corta y no cambia lo que se muestra.
+var _riEspera=null;
+ge("ib").addEventListener("input",function(){
+  if(_riEspera) clearTimeout(_riEspera);
+  _riEspera=setTimeout(function(){ _riEspera=null; RI(); },250);
+});
+// Si la pantalla cruza el ancho de celular (al girar el telefono, por ejemplo),
+// se vuelve a dibujar para que aparezcan o se retiren las tarjetas moviles.
+try{
+  var _mqInv=window.matchMedia("(max-width:768px)");
+  var _onMqInv=function(){ RI(); };
+  if(_mqInv.addEventListener) _mqInv.addEventListener("change",_onMqInv);
+  else if(_mqInv.addListener) _mqInv.addListener(_onMqInv);
+}catch(e){}
 ge("pb").addEventListener("input",PR);
 ge("epb-busq").addEventListener("input",function(){ epbRenderLista(this.value); });
 ge("epb-cp").addEventListener("input",epbPrev);
