@@ -1145,6 +1145,16 @@ function cancelarVenta(vid,lidx){
 
 // ── PROVEEDORES ────────────────────────────────────────────────────────────────
 function RP(){
+  // Aviso de proveedores repetidos que ya estuvieran en la base desde antes.
+  // Crear nuevos duplicados ya esta bloqueado en saveProv.
+  var dupProv=ge("prov-dup");
+  if(dupProv){
+    var repetidos=provsDuplicados();
+    if(repetidos.length){
+      dupProv.style.display="block";
+      dupProv.textContent="Proveedor"+(repetidos.length>1?"es":"")+" repetido"+(repetidos.length>1?"s":"")+": "+repetidos.join(", ")+". Sus piezas y sus pagos estan divididos en dos fichas. Conviene pasar todo a una sola.";
+    } else dupProv.style.display="none";
+  }
   var provsOrdenados=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
   var h=""; for(var i=0;i<provsOrdenados.length;i++){
     var p=provsOrdenados[i],enT=0,ingr=0,cost=0;
@@ -1198,8 +1208,34 @@ function aProv(id){
   h+='<div style="display:flex;justify-content:flex-end;padding-top:7px"><button class="btna" onclick="saveProv(\''+( id||"")+'\')" >Guardar</button></div>';
   OM(p?"Editar proveedor":"Nuevo proveedor",h);
 }
+// Compara nombres de proveedor ignorando espacios, mayusculas y acentos, para
+// que "Claudio", "CLAUDIO" y "claudio " se reconozcan como el mismo.
+function normNombreProv(s){
+  var t=String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+  try{ t=t.normalize("NFD").replace(/[̀-ͯ]/g,""); }catch(e){}
+  return t;
+}
+// Devuelve los nombres de proveedor repetidos que ya existen en la base.
+function provsDuplicados(){
+  var vistos={}, rep={};
+  for(var i=0;i<DB.provs.length;i++){
+    var k=normNombreProv(DB.provs[i].nombre);
+    if(!k) continue;
+    if(vistos[k]) rep[DB.provs[i].nombre]=true; else vistos[k]=true;
+  }
+  return Object.keys(rep);
+}
 function saveProv(id){
   var n=ge("pn").value.trim(); if(!n){alert("El nombre es obligatorio");return;}
+  // Un proveedor repetido parte su inventario y sus pagos en dos fichas, y eso
+  // lleva a pagarle de menos. Por eso aqui no se permite continuar: se bloquea.
+  for(var i=0;i<DB.provs.length;i++){
+    if(DB.provs[i].id===id) continue;
+    if(normNombreProv(DB.provs[i].nombre)===normNombreProv(n)){
+      alert('Ya existe un proveedor llamado "'+DB.provs[i].nombre+'".\n\nNo se puede crear dos veces: sus piezas y sus pagos quedarian divididos en dos fichas y se le pagaria de menos.\n\nUsa el proveedor que ya existe, o escribe un nombre distinto.');
+      return;
+    }
+  }
   var d={nombre:n,nombreCompleto:ge("pnc")?ge("pnc").value.trim():"",tipo:ge("pt").value,telefono:ge("ptel").value,cuentaBancaria:ge("pcta")?ge("pcta").value.trim():"",notas:ge("pno").value};
   if(id){ for(var i=0;i<DB.provs.length;i++) if(DB.provs[i].id===id){DB.provs[i]=Object.assign({},DB.provs[i],d);break;} }
   else{ d.id=uid(); DB.provs.push(d); }
@@ -3379,7 +3415,7 @@ function generarPDF(){
   doc+='<h1>Jardín de Hallazgos</h1>';
   doc+='<p style="font-size:13px;font-weight:700;color:#000;margin-bottom:3px">'+esc(tituloDoc)+'</p>';
   doc+='<p style="color:#444;font-size:11px;margin-bottom:4px">Reporte generado: '+hoy()+' | Ventas del periodo vigente: '+esc(periodoTxt)+'</p>';
-  var grandDisp=0,grandVentas=0;
+  var grandDisp=0,grandVentas=0,grandCostoProv=0;
   for(var pi=0;pi<provsList.length;pi++){
     var p=provsList[pi];
     var items=DB.items.filter(function(it){ return it.proveedorId===p.id; });
@@ -3396,12 +3432,18 @@ function generarPDF(){
       if(v.cancelacion) return false;
       return v.lineas.some(function(l){ return !l.cancelada && datosLineaVenta(l).provId===p.id; });
     });
-    var totalVentas=0;
+    // Dos totales distintos: lo que se le PAGA al proveedor (costo acordado) y
+    // lo que la tienda cobro (ingreso). El primero es el que le interesa al
+    // proveedor y se muestra siempre; el segundo es precio de venta y solo
+    // aparece si esa columna opcional esta encendida.
+    var totalVentas=0, totalCostoProv=0;
     for(var vi=0;vi<ventas.length;vi++) for(var li=0;li<ventas[vi].lineas.length;li++){
       var l=ventas[vi].lineas[li];
       if(l.cancelada) continue;
-      if(datosLineaVenta(l).provId!==p.id) continue;
+      var dl=datosLineaVenta(l);
+      if(dl.provId!==p.id) continue;
       totalVentas+=precioEfectivoLinea(ventas[vi],l)*l.cantidad;
+      totalCostoProv+=dl.costo*l.cantidad;
     }
     // Cada pieza aparece UNA SOLA VEZ en el reporte. Las vendidas en el periodo
     // se listan en "Ventas completadas" y se sacan del bloque de sin existencia,
@@ -3451,7 +3493,7 @@ function generarPDF(){
       doc+='</table>';
     }
     if(ventas.length){
-      doc+='<h3>Ventas completadas del periodo</h3><table><tr><th>Fecha</th><th>Clave</th><th>Descripcion</th><th>Cant.</th>'+(incPrecio?'<th>Precio</th><th>Total</th>':'')+'</tr>';
+      doc+='<h3>Ventas completadas del periodo</h3><table><tr><th>Fecha</th><th>Clave</th><th>Descripcion</th><th>Cant.</th><th>Costo prov.</th>'+(incPrecio?'<th>Precio venta</th><th>Total venta</th>':'')+'</tr>';
       for(var vi=0;vi<ventas.length;vi++){
         var v=ventas[vi];
         for(var li=0;li<v.lineas.length;li++){
@@ -3460,11 +3502,13 @@ function generarPDF(){
           var dv=datosLineaVenta(lv);
           if(dv.provId!==p.id) continue;
           var pu=precioEfectivoLinea(v,lv);
-          doc+='<tr><td>'+v.fecha+'</td><td><b>'+esc(dv.sku)+'</b></td><td>'+esc(dv.desc)+'</td><td style="text-align:center">'+lv.cantidad+'</td>'+(incPrecio?'<td>$'+Math.round(pu)+'</td><td><b>$'+Math.round(pu*lv.cantidad)+'</b></td>':'')+'</tr>';
+          doc+='<tr><td>'+v.fecha+'</td><td><b>'+esc(dv.sku)+'</b></td><td>'+esc(dv.desc)+'</td><td style="text-align:center">'+lv.cantidad+'</td><td><b>$'+Math.round(dv.costo*lv.cantidad)+'</b></td>'+(incPrecio?'<td>$'+Math.round(pu)+'</td><td>$'+Math.round(pu*lv.cantidad)+'</td>':'')+'</tr>';
         }
       }
-      doc+='</table><p class="total">Total ventas completadas: $'+Math.round(totalVentas)+'</p>';
+      doc+='</table><p class="total">Total a pagar al proveedor: $'+Math.round(totalCostoProv)+'</p>';
+      if(incPrecio) doc+='<p class="total" style="font-weight:400">Ingreso de la tienda por estas ventas: $'+Math.round(totalVentas)+'</p>';
       grandVentas+=totalVentas;
+      grandCostoProv+=totalCostoProv;
     } else { doc+='<p style="color:#555;font-size:11px;margin-bottom:12px">Sin ventas completadas en el periodo vigente'+(apartadas.length?' ('+apartadas.length+' pieza'+(apartadas.length===1?"":"s")+' apartada'+(apartadas.length===1?"":"s")+', pendiente'+(apartadas.length===1?"":"s")+' de liquidar)':'')+'.</p>'; }
   }
   // Si el reporte es de UN solo proveedor de consignacion, anexar leyenda de Clausula Segunda + fechas + firmas
@@ -3485,7 +3529,8 @@ function generarPDF(){
   if(incPrecio) doc+='<p class="total">TOTAL VALOR INVENTARIO DISPONIBLE: $'+Math.round(grandDisp)+'</p>';
   // El total refleja unicamente ventas COMPLETADAS. Las piezas apartadas quedan
   // pendientes y se listan arriba, pero no entran aqui.
-  doc+='<p class="total">TOTAL VENTAS COMPLETADAS ('+esc(periodoTxt)+'): $'+Math.round(grandVentas)+'</p>';
+  doc+='<p class="total">TOTAL A PAGAR AL PROVEEDOR ('+esc(periodoTxt)+'): $'+Math.round(grandCostoProv)+'</p>';
+  if(incPrecio) doc+='<p class="total" style="font-weight:400">Ingreso total de la tienda por estas ventas: $'+Math.round(grandVentas)+'</p>';
   doc+='<\/body><\/html>';
   CM();
   var w=window.open("","_blank","width=900,height=700");
