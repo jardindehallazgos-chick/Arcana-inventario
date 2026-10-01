@@ -1502,16 +1502,17 @@ function RChecklist(){
 
   var nombreM=nombreMes(ymCerrar);
 
-  if(yaCerrado){
-    var h2='<div class="h3" style="margin-bottom:6px">Cierre de mes</div>';
-    h2+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px;margin-bottom:10px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado.</div>';
-    h2+='<div class="sm mut" style="margin-bottom:8px">El Reporte general de ventas y el de Consignatarios ya no estan disponibles para este mes: su detalle linea por linea se archivo al cerrar. Descargalos <b>antes</b> de cerrar el mes siguiente.</div>';
-    h2+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("Excel INV-Mes (inventario actual)","respaldoInventarioProveedores()",true)+'</div>';
-    el.innerHTML=h2;
-    return;
-  }
-  if(!tieneVentas){
-    el.innerHTML='<div class="h3" style="margin-bottom:6px">Cierre de mes</div><div class="sm mut" style="padding:10px">No hay ventas registradas en '+nombreM+' que requieran cierre.</div>';
+  // Si no hay nada que cerrar este mes, el panel se reduce. PERO si quedaron
+  // piezas vendidas sin limpiar de un cierre anterior, el paso 6 se sigue
+  // ofreciendo aqui: de lo contrario esa limpieza queda sin ningun boton.
+  if(!yaCerrado && !tieneVentas){
+    var h0='<div class="h3" style="margin-bottom:6px">Cierre de mes</div>';
+    h0+='<div class="sm mut" style="padding:10px 0">No hay ventas registradas en '+nombreM+' que requieran cierre.</div>';
+    if(cerosPendientes>0){
+      h0+='<div class="sm" style="color:#f59e0b;margin-bottom:8px">Quedaron '+cerosPendientes+' pieza(s) vendidas en cero de un cierre anterior, pendientes de limpiar.</div>';
+      h0+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",true,"#f59e0b")+boton("Excel INV-Mes","respaldoInventarioProveedores()",true)+'</div>';
+    }
+    el.innerHTML=h0;
     return;
   }
 
@@ -1532,22 +1533,33 @@ function RChecklist(){
   try{ ultimoResp=localStorage.getItem("ultimoRespaldo"); }catch(e){}
   var respaldoHoyOk = ultimoResp===hoyStr.slice(0,10);
 
+  // El panel NO se reemplaza al cerrar el mes: los pasos 6 y 7 solo sirven
+  // DESPUES del cierre, asi que la lista se conserva con los pasos cumplidos
+  // palomeados y esos dos botones ya activos. Antes el panel se sustituia por
+  // un aviso y esos dos pasos quedaban sin boton: imposibles de completar.
   var h='<div class="h3" style="margin-bottom:4px">Panel de cierre de mes — '+nombreM+'</div>';
-  h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
+  if(yaCerrado){
+    h+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px;margin:6px 0 8px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado. Faltan los pasos 6 y 7.</div>';
+    h+='<div class="sm mut" style="margin-bottom:10px">El Reporte general de ventas y el de Consignatarios ya no estan disponibles para este mes: su detalle linea por linea se archivo al cerrar. Descargalos <b>antes</b> de cerrar el mes siguiente.</div>';
+  } else {
+    h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
+  }
 
   h+=fila(true, "1. Revisa y corrige las ventas del mes", "Cancela cualquier venta equivocada ANTES de continuar. Se hace desde el historial de abajo.");
-  h+=fila(respaldoHoyOk, "2. Respalda", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.");
-  h+=fila(descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Conserva el detalle completo de las ventas.");
-  h+=fila(false, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
+  h+=fila(yaCerrado||respaldoHoyOk, "2. Respalda", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.");
+  h+=fila(yaCerrado||descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Conserva el detalle completo de las ventas.");
+  h+=fila(yaCerrado, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
   h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
-  h+=fila(false, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
+  h+=fila(yaCerrado&&cerosPendientes===0, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
   h+=fila(false, "7. Genera el Excel de inventario (INV-Mes)", "Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.");
 
   // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
   h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("2. Respaldar ahora","respaldar()",!respaldoHoyOk)+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("3. Descargar CSV del mes",'descargarMes("'+ymCerrar+'")',!descargado)+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado)+'</div>';
+  // Una vez cerrado el mes, los botones 1 a 5 ya no tienen nada que hacer y se
+  // apagan; los que siguen vivos son el 6 y el 7.
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("2. Respaldar ahora","respaldar()",!respaldoHoyOk&&!yaCerrado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("3. Descargar CSV del mes",'descargarMes("'+ymCerrar+'")',!descargado&&!yaCerrado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado&&!yaCerrado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado&&!yaCerrado)+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("5. Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado)+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("6. Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",yaCerrado,"#f59e0b")+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("7. Excel INV-Mes","respaldoInventarioProveedores()",yaCerrado)+'</div>';
