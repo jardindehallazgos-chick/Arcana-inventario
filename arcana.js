@@ -1497,25 +1497,8 @@ function RChecklist(){
   // Estados de los pasos
   var descargado=(window._mesesDescargados&&window._mesesDescargados[ymCerrar])?true:false;
   // ¿Hay piezas vendidas en cero pendientes de limpiar?
-  // Solo cuentan las piezas en cero que SE PUEDEN limpiar. Las reservadas en un
-  // apartado estan protegidas y nunca se borran, asi que incluirlas dejaba el
-  // paso 6 imposible de palomear mientras hubiera cualquier apartado activo.
-  var reservadosChk={};
-  for(var i=0;i<(DB.apartados||[]).length;i++){
-    var aChk=DB.apartados[i];
-    if(aChk.estado!=="activo" && aChk.estado!=="resguardo" && aChk.estado!=="abandonado") continue;
-    var pzChk=apaPiezas(aChk);
-    for(var j=0;j<pzChk.length;j++) reservadosChk[pzChk[j].itemId]=true;
-  }
-  var cerosPendientes=0, cerosProtegidos=0;
-  for(var i=0;i<DB.items.length;i++){
-    if((DB.items[i].cantidad||0)!==0) continue;
-    if(reservadosChk[DB.items[i].id]) cerosProtegidos++; else cerosPendientes++;
-  }
-  var notaProtegidas = cerosProtegidos>0 ? (" "+cerosProtegidos+" pieza(s) apartada(s) quedan en cero a proposito y no se tocan.") : "";
-  // El paso 7 se marca cuando el Excel INV-Mes ya se genero para ESTE mes.
-  var excelHecho=false;
-  try{ excelHecho = localStorage.getItem("excelInvMes")===ymCerrar; }catch(e){}
+  var cerosPendientes=0;
+  for(var i=0;i<DB.items.length;i++) if((DB.items[i].cantidad||0)===0) cerosPendientes++;
 
   var nombreM=nombreMes(ymCerrar);
 
@@ -1526,8 +1509,8 @@ function RChecklist(){
     var h0='<div class="h3" style="margin-bottom:6px">Cierre de mes</div>';
     h0+='<div class="sm mut" style="padding:10px 0">No hay ventas registradas en '+nombreM+' que requieran cierre.</div>';
     if(cerosPendientes>0){
-      h0+='<div class="sm" style="color:#f59e0b;margin-bottom:8px">Quedaron '+cerosPendientes+' pieza(s) vendidas en cero de un cierre anterior, pendientes de limpiar.'+notaProtegidas+'</div>';
-      h0+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",true,"#f59e0b")+boton("Excel INV-Mes",'respaldoInventarioProveedores("'+ymCerrar+'")',true)+'</div>';
+      h0+='<div class="sm" style="color:#f59e0b;margin-bottom:8px">Quedaron '+cerosPendientes+' pieza(s) vendidas en cero de un cierre anterior, pendientes de limpiar.</div>';
+      h0+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",true,"#f59e0b")+boton("Excel INV-Mes","respaldoInventarioProveedores()",true)+'</div>';
     }
     el.innerHTML=h0;
     return;
@@ -1556,11 +1539,7 @@ function RChecklist(){
   // un aviso y esos dos pasos quedaban sin boton: imposibles de completar.
   var h='<div class="h3" style="margin-bottom:4px">Panel de cierre de mes — '+nombreM+'</div>';
   if(yaCerrado){
-    var faltan=[];
-    if(cerosPendientes>0) faltan.push("6");
-    if(!excelHecho) faltan.push("7");
-    var remate = faltan.length ? (" Falta"+(faltan.length>1?"n":"")+" el paso "+faltan.join(" y el ")+".") : " Cierre completo.";
-    h+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px;margin:6px 0 8px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado.'+remate+'</div>';
+    h+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px;margin:6px 0 8px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado. Faltan los pasos 6 y 7.</div>';
     h+='<div class="sm mut" style="margin-bottom:10px">El Reporte general de ventas y el de Consignatarios ya no estan disponibles para este mes: su detalle linea por linea se archivo al cerrar. Descargalos <b>antes</b> de cerrar el mes siguiente.</div>';
   } else {
     h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
@@ -1571,8 +1550,8 @@ function RChecklist(){
   h+=fila(yaCerrado||descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Conserva el detalle completo de las ventas.");
   h+=fila(yaCerrado, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
   h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
-  h+=fila(yaCerrado&&cerosPendientes===0, "6. Limpia las piezas vendidas del inventario", (cerosPendientes>0?(cerosPendientes+" pieza(s) en cero por limpiar."):"Sin piezas en cero pendientes.")+notaProtegidas);
-  h+=fila(excelHecho, "7. Genera el Excel de inventario (INV-Mes)", excelHecho?"Generado para "+nombreM+".":"Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.");
+  h+=fila(yaCerrado&&cerosPendientes===0, "6. Limpia las piezas vendidas del inventario", cerosPendientes>0?(cerosPendientes+" pieza(s) en cero."):"Sin piezas en cero pendientes.");
+  h+=fila(false, "7. Genera el Excel de inventario (INV-Mes)", "Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.");
 
   // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
   h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
@@ -1583,7 +1562,7 @@ function RChecklist(){
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado&&!yaCerrado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado&&!yaCerrado)+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("5. Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado)+'</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("6. Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",yaCerrado,"#f59e0b")+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("7. Excel INV-Mes",'respaldoInventarioProveedores("'+ymCerrar+'")',yaCerrado)+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("7. Excel INV-Mes","respaldoInventarioProveedores()",yaCerrado)+'</div>';
   h+='</div>';
 
   el.innerHTML=h;
@@ -1766,9 +1745,7 @@ function compararClaveNatural(skuA,skuB){
   return restA.localeCompare(restB,'es',{sensitivity:'base'});
 }
 
-// ymRef: el mes del panel de cierre al que corresponde este Excel. Sirve para
-// palomear el paso 7. Si se llama sin ese dato, se asume el mes en curso.
-function respaldoInventarioProveedores(ymRef){
+function respaldoInventarioProveedores(){
   if(typeof ExcelJS==="undefined"){ alert("No se pudo cargar la libreria de Excel. Verifica tu conexion a internet e intenta de nuevo."); return; }
   var porProv={}; // provId -> [items]
   for(var i=0;i<DB.items.length;i++){
@@ -1867,9 +1844,6 @@ function respaldoInventarioProveedores(ymRef){
     var blob=new Blob([buffer],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     var url=URL.createObjectURL(blob), a=document.createElement("a");
     a.href=url; a.download=nombreArchivo; a.click(); URL.revokeObjectURL(url);
-    // Queda registrado para que el paso 7 del panel de cierre se palomee solo.
-    try{ localStorage.setItem("excelInvMes", ymRef||diaComercial().slice(0,7)); }catch(e){}
-    if(ge("checklist-cierre")) RChecklist();
     apaOkGlobal("Respaldo de inventario por proveedor descargado ("+provsOrd.length+" proveedores).");
   }).catch(function(err){
     alert("No se pudo generar el archivo de Excel. Intenta de nuevo.");
