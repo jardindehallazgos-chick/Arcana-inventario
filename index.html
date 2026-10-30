@@ -214,6 +214,7 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
   <span id="sync-status" id="sync-ind" style="font-size:10px;color:#6b6358;margin-left:6px">Conectando...</span>
   <span id="da"></span>
   <div id="hr">
+    <button class="hb" onclick="cerrarSesionAcceso()" title="Volver a pedir la contrasena de acceso">Bloquear</button>
     <button class="hb" onclick="restaurar()">Restaurar</button>
     <button class="hbg" onclick="respaldar()">Respaldar</button>
     <input type="file" id="frest" accept=".json" style="display:none"/>
@@ -309,7 +310,19 @@ input,select,textarea{font-family:inherit;outline:none;color:#f0ebe3}
         </div>
         <div id="epb-prev" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
         <button class="btna" id="epb-btn" style="width:100%;padding:10px 0;font-size:13px;border-radius:10px" onclick="epbImprimir()">Imprimir etiquetas</button>
-        <div class="sm mut" style="margin-top:6px;text-align:center">Formato 5x2.8cm</div>
+        <div class="sm mut" id="etq-formato" style="margin-top:6px;text-align:center">Formato 50 x 25 mm</div>
+        <div style="margin-top:12px;padding-top:11px;border-top:1px solid #2a2620">
+          <div class="lbl" style="margin-bottom:6px">Tamano del rollo</div>
+          <div style="display:flex;gap:7px;align-items:center">
+            <input type="number" class="inp" id="etq-w" min="20" max="80" step="1" style="width:62px;padding:4px 7px;height:30px"/>
+            <span class="sm mut">x</span>
+            <input type="number" class="inp" id="etq-h" min="10" max="60" step="1" style="width:62px;padding:4px 7px;height:30px"/>
+            <span class="sm mut">mm</span>
+            <button class="btn btns" onclick="etiqGuardarMedida()" style="margin-left:auto">Guardar</button>
+          </div>
+          <div id="etq-err" style="color:#f87171;font-size:11px;min-height:14px;margin-top:4px"></div>
+          <div id="etq-nota" class="sm mut" style="line-height:1.5">Mide una etiqueta del rollo: primero el ancho, luego el alto en el sentido en que avanza el papel. El tamano de letra se ajusta solo.</div>
+        </div>
       </div>
     </div>
   </div>

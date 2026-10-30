@@ -22,6 +22,7 @@ function hashDB(){
 function startListener(){
   if(listenerActive) return;
   listenerActive = true;
+  registrarRefresco();   // refrescar tambien al volver a la pestana
   pollFirestore();
 }
 
@@ -61,24 +62,8 @@ function pollFirestoreCompleto(knownUpdated){
       .then(function(doc){
         if(doc.fields && !isLocalChange){
           var d = fromFB({mapValue:{fields:doc.fields}});
-          if(d&&d.items&&d.provs){
-            // Temporarily load remote to get its hash
-            var tempDB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
-            _itemIndex=null; _provIndex=null;
-            var tempHash = JSON.stringify(tempDB);
-            var localHash = JSON.stringify({items:DB.items, provs:DB.provs, ventas:DB.ventas, apartados:DB.apartados, saldos:DB.saldos, archivo:DB.archivo, config:DB.config});
-            if(tempHash !== localHash){
-              // Remote data differs from local - update
-              DB = tempDB;
-              try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
-              // Refresh current visible tab without losing position
-              refreshCurrentTab();
-              applyConfig();
-              fbStatus("Actualizado desde otro dispositivo", "#818cf8");
-              setTimeout(function(){ fbStatus("Conectado", "#4ade80"); }, 2500);
-            }
-          }
-          _lastKnownUpdated = (d && d.updated) || knownUpdated || null;
+          if(d&&d.items&&d.provs) aplicarRemoto(d, knownUpdated);
+          else _lastKnownUpdated = knownUpdated || _lastKnownUpdated;
         }
         isLocalChange = false;
         pollFirestore(); // Schedule next poll
@@ -169,6 +154,54 @@ function mostrarAlertaSyncPendiente(mostrar){
   if(hdr) hdr.style.marginTop = mostrar ? "38px" : "0";
 }
 
+// Aplica la copia de la nube sobre la de esta pantalla si son distintas.
+// La usan el revisor de cada 8 segundos y el refresco al volver a la pestana.
+function aplicarRemoto(d, knownUpdated){
+  var tempDB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
+  _itemIndex=null; _provIndex=null;
+  var tempHash = JSON.stringify(tempDB);
+  var localHash = JSON.stringify({items:DB.items, provs:DB.provs, ventas:DB.ventas, apartados:DB.apartados, saldos:DB.saldos, archivo:DB.archivo, config:DB.config});
+  if(tempHash !== localHash){
+    DB = tempDB;
+    try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+    refreshCurrentTab();   // sin perder la posicion ni recargar la pagina
+    applyConfig();
+    fbStatus("Actualizado desde otro dispositivo", "#818cf8");
+    setTimeout(function(){ fbStatus("Conectado", "#4ade80"); }, 2500);
+  }
+  _lastKnownUpdated = (d && d.updated) || knownUpdated || null;
+}
+
+// ── REFRESCO AL VOLVER A LA PESTANA ───────────────────────────────────────────
+// El revisor de cada 8 segundos vive en un setTimeout, y los navegadores SUSPENDEN
+// los temporizadores de una pestana que esta en segundo plano (sobre todo en
+// celular). Una pestana que estuvo minimizada media hora vuelve con datos de hace
+// media hora, y lo primero que se guarde desde ahi sube esa foto vieja.
+// Esto NO recarga la pagina: solo vuelve a bajar los datos, asi que no se pierde
+// la posicion ni se vuelve a pedir la contrasena.
+var _refrescoRegistrado=false;
+function revisarAlVolver(){
+  try{ if(document.hidden) return; }catch(e){}
+  if(!listenerActive) return;   // sin conexion: ya hay un reintento en marcha
+  if(isLocalChange) return;     // hay un guardado propio en vuelo
+  fetch(FB_BASE+"?key="+FB_API_KEY)
+    .then(function(r){ return r.json(); })
+    .then(function(doc){
+      if(!doc.fields || isLocalChange) return;
+      var d=fromFB({mapValue:{fields:doc.fields}});
+      if(d&&d.items&&d.provs) aplicarRemoto(d, null);
+    })
+    .catch(function(){});
+}
+function registrarRefresco(){
+  if(_refrescoRegistrado) return;
+  _refrescoRegistrado=true;
+  try{
+    document.addEventListener("visibilitychange", function(){ if(!document.hidden) revisarAlVolver(); });
+    window.addEventListener("focus", revisarAlVolver);
+  }catch(e){}
+}
+
 function dbSave(){
   _itemIndex=null; _provIndex=null; // invalidar indices (datos cambiaron)
   isLocalChange = true; // Mark as local change to avoid echo
@@ -181,8 +214,34 @@ function dbSave(){
 // Intenta guardar en Firebase, con reintentos automaticos si falla por conexion.
 // Hasta 5 intentos, con espera creciente (2s, 4s, 8s, 16s, 32s) para no saturar
 // una red inestable. Mientras no se confirme, la alerta de "sin sincronizar" permanece.
+// ── CANDADO AL GUARDAR ────────────────────────────────────────────────────────
+// Cada guardado reemplaza el documento COMPLETO, asi que la ultima pantalla que
+// escribe decide el valor de todo el inventario. Si esa pantalla traia una copia
+// atrasada, borra el trabajo de las demas sin avisar.
+// Antes de escribir se confirma que el sello de tiempo de la nube siga siendo el
+// que esta pantalla vio por ultima vez. Si cambio, esta copia esta atrasada: en
+// vez de pisar, se fusiona (ver fusionarConNube).
 function intentarGuardarFB(intento){
   fbStatus(intento>0?("Reintentando guardar... ("+intento+")"):"Guardando...", "#c9a96e");
+  fetch(FB_BASE+"?key="+FB_API_KEY+"&mask.fieldPaths=updated")
+    .then(function(r){ return r.json(); })
+    .then(function(doc){
+      var remoto=(doc&&doc.fields&&doc.fields.updated&&doc.fields.updated.stringValue)||null;
+      if(remoto && _lastKnownUpdated && remoto!==_lastKnownUpdated){
+        conflictoAlGuardar();   // otra pantalla escribio: no pisar
+        return;
+      }
+      escribirFB(intento);
+    })
+    .catch(function(){
+      // Si no se pudo consultar el sello (sin red), se intenta guardar igual: el
+      // dato de esta pantalla no debe perderse. La red de los cambios pendientes
+      // cubre el resto.
+      escribirFB(intento);
+    });
+}
+function escribirFB(intento){
+  var sello=new Date().toISOString();
   var body = JSON.stringify({fields:{
     items: toFB(DB.items),
     provs: toFB(DB.provs),
@@ -191,7 +250,7 @@ function intentarGuardarFB(intento){
     saldos: toFB(DB.saldos||[]),
     archivo: toFB(DB.archivo||[]),
     config: toFB(DB.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}),
-    updated: toFB(new Date().toISOString())
+    updated: toFB(sello)
   }});
   fetch(FB_BASE+"?key="+FB_API_KEY, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:body})
     .then(function(r){ return r.json(); })
@@ -200,11 +259,74 @@ function intentarGuardarFB(intento){
         console.log("FB save error:", d.error);
         reintentarOAvisar(intento);
       } else {
+        // El sello que acabamos de escribir pasa a ser el conocido, si no el
+        // propio guardado se veria como cambio ajeno en el siguiente candado.
+        _lastKnownUpdated=sello;
         fbStatus("Sincronizado", "#4ade80");
         marcarPendiente(false); // confirmado: ya no hay riesgo de perder este cambio
       }
     })
     .catch(function(e){ reintentarOAvisar(intento); });
+}
+// Otra pantalla escribio mientras esta tenia cambios sin subir.
+function conflictoAlGuardar(){
+  fbStatus("Otra pantalla guardo cambios - fusionando...", "#f59e0b");
+  fetch(FB_BASE+"?key="+FB_API_KEY)
+    .then(function(r){ return r.json(); })
+    .then(function(doc){
+      if(!doc.fields){ escribirFB(0); return; }
+      var remoto=fromFB({mapValue:{fields:doc.fields}});
+      if(!remoto||!remoto.items||!remoto.provs){ escribirFB(0); return; }
+      var res=fusionarConNube(remoto);
+      _lastKnownUpdated=remoto.updated||null;
+      try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+      refreshCurrentTab(); applyConfig();
+      escribirFB(0);  // subir ya fusionado
+      avisarFusion(res);
+    })
+    .catch(function(){ reintentarOAvisar(0); });
+}
+// Fusiona la copia de la nube con la de esta pantalla:
+//   - ventas, apartados y saldos son registros que solo se agregan: se unen por
+//     id, de modo que no se pierde ninguna venta de ninguna de las dos pantallas.
+//   - inventario, proveedores y configuracion se toman de la NUBE: son valores
+//     que se sobrescriben, y la copia de esta pantalla puede estar atrasada.
+// Devuelve cuantos registros propios se rescataron, para poder avisarlo.
+function fusionarConNube(remoto){
+  var res={ventas:0, apartados:0, saldos:0};
+  function unir(locales, remotos, clave){
+    var vistos={}, out=(remotos||[]).slice();
+    for(var i=0;i<out.length;i++) if(out[i]&&out[i].id) vistos[out[i].id]=true;
+    var propios=0;
+    for(var i=0;i<(locales||[]).length;i++){
+      var r=locales[i];
+      if(r&&r.id&&!vistos[r.id]){ out.push(r); vistos[r.id]=true; propios++; }
+    }
+    res[clave]=propios;
+    return out;
+  }
+  var ventas=unir(DB.ventas, remoto.ventas, "ventas");
+  var apartados=unir(DB.apartados, remoto.apartados, "apartados");
+  var saldos=unir(DB.saldos, remoto.saldos, "saldos");
+  // Las ventas se muestran de la mas nueva a la mas vieja.
+  ventas.sort(function(a,b){ return (b.ts||0)-(a.ts||0); });
+  DB={ items:remoto.items, provs:remoto.provs, ventas:ventas,
+       apartados:apartados, saldos:saldos, archivo:remoto.archivo||DB.archivo||[],
+       config:remoto.config||DB.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""} };
+  _itemIndex=null; _provIndex=null;
+  return res;
+}
+function avisarFusion(res){
+  var rescatados=(res.ventas||0)+(res.apartados||0)+(res.saldos||0);
+  var txt="Otra pantalla guardo cambios al mismo tiempo que esta.\n\n";
+  if(rescatados>0){
+    txt+="Se conservaron los registros que solo existian aqui: "+
+      (res.ventas?res.ventas+" venta(s) ":"")+(res.apartados?res.apartados+" apartado(s) ":"")+
+      (res.saldos?res.saldos+" saldo(s) ":"")+"\n\n";
+  }
+  txt+="El inventario se tomo de la version mas nueva, asi que si acabas de corregir "+
+       "una cantidad en esta pantalla, vuelve a revisarla.";
+  try{ setTimeout(function(){ alert(txt); },60); }catch(e){}
 }
 function reintentarOAvisar(intento){
   if(intento<5){
@@ -279,14 +401,36 @@ function dbLoad(){
           var hayPendiente=false;
           try{ hayPendiente = localStorage.getItem("vntPendiente")==="1"; }catch(e){}
           if(hayPendiente && DB && DB.items && DB.provs){
-            fbStatus("Cambios sin sincronizar detectados - reenviando...", "#f59e0b");
-            mostrarAlertaSyncPendiente(true);
+            // Antes aqui se subia la copia local COMPLETA encima de la nube, para
+            // no perder una venta que hubiera quedado sin confirmar. El efecto
+            // secundario era grave: una pantalla que quedo sin red en septiembre
+            // y se abre en octubre borraba todo lo capturado en el intermedio.
+            // Ahora se FUSIONA: se rescatan las ventas, apartados y saldos que
+            // solo existen aqui, y el inventario se toma de la nube.
+            fbStatus("Cambios sin sincronizar - fusionando...", "#f59e0b");
+            var resF=fusionarConNube(d);
+            _lastKnownUpdated=d.updated||null;
+            try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
+            detectarDuplicados(true);
             RI(); PH(); applyConfig();
-            intentarGuardarFB(0); // reintentar subir la copia local, no la de la nube
+            var rescatados=(resF.ventas||0)+(resF.apartados||0)+(resF.saldos||0);
+            if(rescatados>0){
+              mostrarAlertaSyncPendiente(true);
+              intentarGuardarFB(0);   // subir lo fusionado, no la copia vieja
+              avisarFusion(resF);
+            } else {
+              // La nube ya tenia todo: no habia nada que rescatar.
+              marcarPendiente(false);
+              mostrarAlertaSyncPendiente(false);
+              fbStatus("Conectado", "#4ade80");
+            }
             startListener();
           } else {
             DB = {items:d.items, provs:d.provs, ventas:d.ventas||[], apartados:d.apartados||[], saldos:d.saldos||[], archivo:d.archivo||[], config:d.config||{accessPass:ACCESS_PASS_DEFAULT,adminPass:ADMIN_PASS_DEFAULT,logo:""}};
             _itemIndex=null; _provIndex=null;
+            // Sello de referencia del candado al guardar: sin esto, el primer
+            // guardado despues de cargar no tendria contra que comparar.
+            _lastKnownUpdated=d.updated||null;
             detectarDuplicados(true); // red de seguridad: auto-reparar IDs duplicados
             try{ localStorage.setItem("vnt", JSON.stringify(DB)); }catch(e){}
             RI(); PH(); applyConfig();
@@ -508,14 +652,25 @@ function datosLineaVenta(l){
 // global de la venta segun el peso de la linea en el subtotal. Misma logica que
 // cancelarVenta y el reporte general, para que ningun reporte muestre el precio
 // de lista cuando se cobro con descuento.
+// Lo que realmente se cobro por cada pieza de una linea, ya con los dos
+// descuentos encima: primero el del concepto, y luego la parte proporcional del
+// descuento general, que se cobro sobre LO QUE QUEDABA. En ventas anteriores a
+// este parche las lineas no traen descuento propio, asi que da el mismo
+// resultado de siempre.
 function precioEfectivoLinea(v,l){
-  var desc=v.descuento||0;
-  if(!(desc>0)) return l.precio;
-  var sub=0;
-  for(var k=0;k<v.lineas.length;k++) sub+=v.lineas[k].precio*v.lineas[k].cantidad;
-  if(!(sub>0)) return l.precio;
-  var subLinea=l.precio*l.cantidad;
-  return Math.max(0,(subLinea-desc*(subLinea/sub))/l.cantidad);
+  if(!l.cantidad) return 0;
+  var bruto=l.precio*l.cantidad;
+  var neto=Math.max(0, bruto-(l.descuento||0));
+  var descG=v.descuento||0;
+  if(descG>0){
+    var resto=0;
+    for(var k=0;k<v.lineas.length;k++){
+      var lk=v.lineas[k];
+      resto+=Math.max(0, lk.precio*lk.cantidad-(lk.descuento||0));
+    }
+    if(resto>0) neto=Math.max(0, neto-descG*(neto/resto));
+  }
+  return neto/l.cantidad;
 }
 function ganancia(item,mpago){ return fiscal(item.precioVenta||0,mpago).neto-(item.costoProveedor||0); }
 function costoNeto(it){
@@ -642,12 +797,31 @@ function guardarPass(){
 }
 
 // ── CONTRASENA DE ACCESO GENERAL (pantalla de bloqueo al abrir el programa) ──
+// La sesion desbloqueada se recuerda en sessionStorage, que es memoria POR PESTANA
+// y se borra al cerrarla. Asi recargar (F5, o deslizar hacia abajo en el celular)
+// no vuelve a pedir la contrasena, pero abrir el programa de cero si: si alguien
+// toma el equipo, sigue encontrando la pantalla de bloqueo.
+function desbloquearApp(){
+  var l=ge("acclock"); if(l) l.style.display="none";
+  var a=ge("appwrap"); if(a) a.style.display="block";
+  try{ sessionStorage.setItem("arcanaSesion","1"); }catch(e){}
+}
+function restaurarSesion(){
+  var abierta=false;
+  try{ abierta = sessionStorage.getItem("arcanaSesion")==="1"; }catch(e){}
+  if(abierta) desbloquearApp();
+}
+function cerrarSesionAcceso(){
+  try{ sessionStorage.removeItem("arcanaSesion"); }catch(e){}
+  var l=ge("acclock"); if(l) l.style.display="flex";
+  var a=ge("appwrap"); if(a) a.style.display="none";
+  var i=ge("acc-pass-input"); if(i){ i.value=""; i.focus(); }
+}
 function tryAccessLogin(){
   var inp=ge("acc-pass-input"); if(!inp) return;
   var err=ge("acclock-err");
   if(inp.value===getAccessPass()){
-    ge("acclock").style.display="none";
-    ge("appwrap").style.display="block";
+    desbloquearApp();
   } else {
     if(err) err.textContent="Contrasena incorrecta.";
     inp.value=""; inp.focus();
@@ -902,6 +1076,71 @@ function delSel(){
   dbSave(); RI(); var btn=ge("btn-del-sel"); if(btn) btn.style.display="none";
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// BITACORA DE MOVIMIENTOS DE CANTIDAD
+// ══════════════════════════════════════════════════════════════════════════════
+// Cada cambio de cantidad deja constancia EN LA PIEZA: fecha, de cuanto a cuanto,
+// por que, y el folio de la venta o el apartado. Vive en la pieza y no en las
+// ventas, asi que SOBREVIVE al cierre de mes. Tope de 20 movimientos por pieza
+// para no engordar la base.
+var MOV_MAX = 20;
+var MOV_CAUSA = {
+  alta:"Alta", importacion:"Importacion", edicion:"Edicion manual",
+  venta:"Venta", cancelacion:"Cancelacion de venta",
+  apartado:"Apartado", apa_cancel:"Apartado cancelado", apa_elim:"Apartado eliminado",
+  devolucion:"Devolucion"
+};
+function regMov(it, antes, despues, causa, ref){
+  if(!it || antes===despues) return;
+  if(!it.mov) it.mov=[];
+  it.mov.unshift({f:hoy(), ts:Date.now(), de:antes, a:despues, c:causa, r:ref||""});
+  if(it.mov.length>MOV_MAX) it.mov.length=MOV_MAX;
+}
+// Unico punto por el que debe cambiar una cantidad. Si la operacion dejaria un
+// numero NEGATIVO eso es un error del programa, no una pieza agotada: antes se
+// tapaba con Math.max(0,...) y no quedaba rastro. Ahora se anota el faltante en
+// la bitacora y se avisa, para poder encontrar el origen.
+function setCant(it, nueva, causa, ref){
+  if(!it) return 0;
+  var antes = it.cantidad||0;
+  if(nueva<0){
+    var faltan=Math.abs(nueva);
+    regMov(it, antes, 0, causa, (ref?ref+" ":"")+"[FALTARON "+faltan+"]");
+    it.cantidad=0;
+    avisoCantidad(it, antes, faltan, causa);
+    return 0;
+  }
+  it.cantidad=nueva;
+  regMov(it, antes, nueva, causa, ref);
+  return nueva;
+}
+// Avisa sin bloquear la operacion: la venta ya ocurrio en el mundo real.
+function avisoCantidad(it, habia, faltaron, causa){
+  var txt="Revisa la clave "+((it&&it.sku)||"")+".\n\nLa operacion ("+(MOV_CAUSA[causa]||causa)+
+    ") necesitaba "+faltaron+" unidad(es) mas de las que habia ("+habia+
+    "). La pieza quedo en cero y el faltante se anoto en su bitacora.";
+  try{ console.log("ARCANA/CANTIDAD: "+((it&&it.sku)||"")+" faltaron "+faltaron+" ("+causa+")"); }catch(e){}
+  try{ setTimeout(function(){ alert(txt); }, 60); }catch(e){}
+}
+// Bitacora lista para mostrar en el detalle de la pieza.
+function movHTML(it){
+  var mv=(it&&it.mov)||[];
+  if(!mv.length) return '<div class="sm mut" style="padding:7px 0">Sin movimientos registrados todavia. La bitacora empieza a llenarse a partir de este parche.</div>';
+  var h='<div style="max-height:190px;overflow-y:auto">';
+  for(var i=0;i<mv.length;i++){
+    var m=mv[i];
+    var sube=(m.a>m.de);
+    var falta=String(m.r||"").indexOf("[FALTARON")!==-1;
+    h+='<div style="display:flex;align-items:baseline;gap:8px;padding:4px 0;border-bottom:1px solid #1e1c18;font-size:11.5px">';
+    h+='<span class="mut" style="min-width:72px">'+esc(m.f||"")+'</span>';
+    h+='<span style="min-width:52px;color:'+(falta?"#f87171":(sube?"#4ade80":"#c9a96e"))+';font-weight:700">'+m.de+' → '+m.a+'</span>';
+    h+='<span style="flex:1">'+esc(MOV_CAUSA[m.c]||m.c||"")+'</span>';
+    if(m.r) h+='<span class="mut" style="font-size:10px">'+esc(String(m.r).slice(0,26))+'</span>';
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+
 function aItem(id){
   var it=id?getItem(id):null;
   var catsOrdF=CATS.slice().sort(function(a,b){ return a.localeCompare(b,'es',{sensitivity:'base'}); });
@@ -910,7 +1149,12 @@ function aItem(id){
   var provsOrdF2=DB.provs.slice().sort(function(a,b){ return (a.nombre||"").localeCompare(b.nombre||"",'es',{sensitivity:'base'}); });
   var po='<option value="">-- Selecciona un proveedor --</option>'; for(var i=0;i<provsOrdF2.length;i++) po+='<option value="'+provsOrdF2[i].id+'"'+(it&&it.proveedorId===provsOrdF2[i].id?" selected":"")+'>'+esc(provsOrdF2[i].nombre)+'</option>';
   var h='<div class="g2"><div class="fld"><label class="lbl" id="slbl">Clave/SKU</label><input class="inp" id="fsk" value="'+esc(it?it.sku:"")+'"/></div>';
-  h+='<div class="fld"><label class="lbl">Cantidad</label><input class="inp" type="number" min="0" id="fca" value="'+(it?it.cantidad:1)+'"/></div></div>';
+  // data-orig guarda la cantidad con la que se abrio el formulario. Al guardar se
+  // compara contra lo que hay en el campo: si no la tocaste, la cantidad NO se
+  // reescribe. Asi entrar a corregir una descripcion o un precio deja de ser una
+  // oportunidad de pisar la existencia sin querer.
+  var cantAct=(it?(it.cantidad||0):1);
+  h+='<div class="fld"><label class="lbl">Cantidad</label><input class="inp" type="number" min="0" id="fca" value="'+cantAct+'" data-orig="'+cantAct+'"/></div></div>';
   h+='<div class="fld"><label class="lbl">Descripcion</label><textarea class="inp" id="fde" rows="2">'+esc(it?it.descripcion:"")+'</textarea></div>';
   // El menu de talla depende de la categoria (los zapatos usan numeros) y se
   // vuelve a armar si la categoria cambia, conservando el valor ya elegido.
@@ -955,10 +1199,32 @@ function saveItem(id){
   if(!provIdSel){ alert("Selecciona un proveedor. Toda pieza debe tener un proveedor asignado."); return; }
   var isDup=false; for(var i=0;i<DB.items.length;i++) if(DB.items[i].sku===sku&&DB.items[i].id!==id){isDup=true;break;}
   if(isDup&&!confirm("Clave duplicada. Continuar?")) return;
-  var cant=parseInt(ge("fca").value)||0;
-  var d={sku:sku,cantidad:cant,descripcion:ge("fde").value,categoria:ge("fct").value,epoca:ge("fep").value,talla:ge("ftl")?ge("ftl").value:"",proveedorId:ge("fpr").value,costoProveedor:parseFloat(ge("fco").value)||0,precioVenta:parseFloat(ge("fpr2").value)||0,fechaIngreso:ge("ffi").value||hoy(),notas:ge("fno").value};
-  if(id){ for(var i=0;i<DB.items.length;i++) if(DB.items[i].id===id){ DB.items[i]=Object.assign({},DB.items[i],d); break; } }
-  else{ d.id=uid(); d.cantidadInicial=cant; d.creadoEn=Date.now(); DB.items.unshift(d); }
+  var campoCant=ge("fca");
+  var cant=parseInt(campoCant.value)||0;
+  var cantOrig=parseInt(campoCant.getAttribute("data-orig"))||0;
+  var cantTocada=(cant!==cantOrig);
+  // La cantidad NO va dentro de d: se aplica aparte y solo si la tocaste, para que
+  // pase siempre por setCant y quede en la bitacora.
+  var d={sku:sku,descripcion:ge("fde").value,categoria:ge("fct").value,epoca:ge("fep").value,talla:ge("ftl")?ge("ftl").value:"",proveedorId:ge("fpr").value,costoProveedor:parseFloat(ge("fco").value)||0,precioVenta:parseFloat(ge("fpr2").value)||0,fechaIngreso:ge("ffi").value||hoy(),notas:ge("fno").value};
+  if(id){
+    for(var i=0;i<DB.items.length;i++) if(DB.items[i].id===id){
+      DB.items[i]=Object.assign({},DB.items[i],d);
+      if(cantTocada){
+        // Corregir la cantidad a mano es corregir cuantas unidades representa esta
+        // pieza, asi que cantidadInicial se mueve lo mismo. De lo contrario el
+        // cuadre (alta - vendidas - apartadas) nunca volveria a dar.
+        var ini=(typeof DB.items[i].cantidadInicial==="number")?DB.items[i].cantidadInicial:cantOrig;
+        DB.items[i].cantidadInicial=Math.max(0, ini+(cant-cantOrig));
+        setCant(DB.items[i], cant, "edicion", "");
+      }
+      break;
+    }
+  }
+  else{
+    d.id=uid(); d.cantidad=cant; d.cantidadInicial=cant; d.creadoEn=Date.now();
+    d.mov=[{f:hoy(), ts:Date.now(), de:0, a:cant, c:"alta", r:""}];
+    DB.items.unshift(d);
+  }
   dbSave(); CM(); RI();
 }
 function delItem(id){
@@ -994,20 +1260,47 @@ function aDet(id){
     '<div class="fr"><span class="mut sm">Costo proveedor</span><span class="sm" style="color:#f87171">-'+fmt(it.costoProveedor)+'</span></div>'+
     '<div style="display:flex;justify-content:space-between;padding-top:5px;margin-top:3px;border-top:1px solid #2a2620;font-weight:700"><span>Ganancia real</span><span style="color:'+(g>=0?"#4ade80":"#f87171")+'">'+fmt(g)+'</span></div></div>';
   if(it.notas) h+='<div style="margin-top:11px;padding:9px;background:#0f0e0c;border-radius:8px;border-left:3px solid #2a2620"><div class="lbl">Notas</div><div class="sm mut it">'+esc(it.notas)+'</div></div>';
+  // Bitacora: de donde salieron y a donde se fueron las unidades de esta pieza.
+  var ini=(typeof it.cantidadInicial==="number")?it.cantidadInicial:null;
+  h+='<div style="margin-top:11px;padding:9px;background:#0f0e0c;border-radius:8px;border-left:3px solid #c9a96e">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">';
+  h+='<div class="lbl">Bitacora de cantidades</div>';
+  h+='<div class="sm mut">'+(ini!==null?('alta '+ini+'  ·  '):'')+'hoy '+(it.cantidad||0)+'</div></div>';
+  h+=movHTML(it)+'</div>';
   OM(it.sku,h);
 }
 
 // ── POS ───────────────────────────────────────────────────────────────────────
 function PR(){
   var q=(ge("pb").value||"").toLowerCase(), el=ge("pres"); if(!q){el.style.display="none";return;}
-  var res=[]; for(var i=0;i<DB.items.length&&res.length<8;i++){ var it=DB.items[i]; if((it.cantidad||0)>0){ var ff=[it.sku,it.descripcion,it.categoria,it.talla]; for(var j=0;j<ff.length;j++) if(String(ff[j]||"").toLowerCase().indexOf(q)!==-1){res.push(it);break;} } }
-  if(!res.length){el.style.display="none";return;}
+  // Las piezas AGOTADAS tambien se muestran, en gris y sin poder seleccionarse.
+  // Antes simplemente no aparecian, y una clave agotada se veia igual que una
+  // clave inexistente: no habia forma de saber si la pieza existe y ya se vendio
+  // o si nunca se capturo.
+  var disp=[], agot=[];
+  for(var i=0;i<DB.items.length;i++){
+    var it=DB.items[i];
+    if(disp.length>=8 && agot.length>=4) break;
+    var ff=[it.sku,it.descripcion,it.categoria,it.talla], hit=false;
+    for(var j=0;j<ff.length;j++) if(String(ff[j]||"").toLowerCase().indexOf(q)!==-1){hit=true;break;}
+    if(!hit) continue;
+    if((it.cantidad||0)>0){ if(disp.length<8) disp.push(it); }
+    else { if(agot.length<4) agot.push(it); }
+  }
+  if(!disp.length&&!agot.length){el.style.display="none";return;}
   el.style.display="block";
-  var h=""; for(var i=0;i<res.length;i++){
-    var it=res[i],pv=getProv(it.proveedorId);
+  var h="";
+  for(var i=0;i<disp.length;i++){
+    var it=disp[i],pv=getProv(it.proveedorId);
     h+='<div onclick="PA(\''+it.id+'\')" style="display:flex;justify-content:space-between;align-items:center;padding:9px 15px;border-bottom:1px solid #1e1c18;cursor:pointer" onmouseover="this.style.background=\'#1e1c18\'" onmouseout="this.style.background=\'\'">';
     h+='<div><span class="mono gold sm" style="margin-right:9px">'+esc(it.sku)+'</span><span style="font-size:13px">'+esc(it.descripcion)+'</span>'+(it.talla?'<span class="sm" style="margin-left:7px;color:#c9a96e;font-weight:600">'+esc(it.talla)+'</span>':'')+'<span class="sm mut" style="margin-left:7px">'+esc(pv?pv.nombre:"")+'</span></div>';
     h+='<div style="display:flex;gap:9px;align-items:center"><span class="sm mut">Disp:'+it.cantidad+'</span><span class="gold">'+fmt(it.precioVenta)+'</span></div></div>';
+  }
+  for(var i=0;i<agot.length;i++){
+    var it=agot[i],pv=getProv(it.proveedorId);
+    h+='<div onclick="aDet(\''+it.id+'\')" title="Agotada. Abre la pieza para ver su bitacora." style="display:flex;justify-content:space-between;align-items:center;padding:9px 15px;border-bottom:1px solid #1e1c18;cursor:pointer;opacity:.55">';
+    h+='<div><span class="mono sm" style="margin-right:9px;color:#6b6358;text-decoration:line-through">'+esc(it.sku)+'</span><span style="font-size:13px;color:#6b6358">'+esc(it.descripcion)+'</span>'+(it.talla?'<span class="sm" style="margin-left:7px;color:#6b6358">'+esc(it.talla)+'</span>':'')+'<span class="sm mut" style="margin-left:7px">'+esc(pv?pv.nombre:"")+'</span></div>';
+    h+='<div style="display:flex;gap:9px;align-items:center"><span class="pill" style="background:#6b635822;color:#a09480;font-size:9px">AGOTADA</span></div></div>';
   }
   el.innerHTML=h;
 }
@@ -1029,31 +1322,78 @@ function RC(){
     h+='<button onclick="CC('+i+',1)" style="background:#1e1c18;border:1px solid #2a2620;border-radius:4px;color:#f0ebe3;width:21px;height:21px;font-size:14px;line-height:1;cursor:pointer">+</button>';
     h+='<input type="number" value="'+l.precio+'" onchange="CP('+i+',this.value)" style="background:#0f0e0c;border:1px solid #2a2620;border-radius:6px;color:#c9a96e;font-size:12px;padding:3px 5px;width:70px;text-align:right;font-family:inherit"/>';
     h+='<button onclick="CE('+i+')" style="background:none;border:none;color:#6b6358;font-size:16px;padding:2px;cursor:pointer">x</button></div>';
+    // Descuento de ESTE concepto, en pesos o en porcentaje
+    h+='<div style="display:flex;align-items:center;gap:5px;margin:-6px 0 9px;padding-left:2px">';
+    h+='<span class="sm mut" style="font-size:10.5px">Desc.</span>';
+    h+='<input type="number" min="0" value="'+(l.desc||0)+'" oninput="CD('+i+',this.value)" onchange="CD('+i+',this.value)" style="background:#0f0e0c;border:1px solid #2a2620;border-radius:5px;color:#f0ebe3;font-size:11px;padding:2px 5px;width:56px;text-align:right;font-family:inherit"/>';
+    h+='<select onchange="CDT('+i+',this.value)" style="background:#0f0e0c;border:1px solid #2a2620;border-radius:5px;color:#f0ebe3;font-size:11px;padding:2px 3px;font-family:inherit">';
+    h+='<option value="monto"'+(l.descTipo!=="pct"?" selected":"")+'>$</option>';
+    h+='<option value="pct"'+(l.descTipo==="pct"?" selected":"")+'>%</option></select>';
+    h+='<span class="sm" id="cl-neto-'+i+'" style="color:#f87171;font-size:10.5px;margin-left:auto"></span>';
+    h+='</div>';
   }
   el.innerHTML=h; tot.style.display="block"; calcC();
 }
 function CC(i,d){ var l=carrito[i]; if(!l) return; var n=l.cant+d; if(n<1||n>l.item.cantidad) return; l.cant=n; RC(); }
 function CP(i,v){ if(carrito[i]) carrito[i].precio=parseFloat(v)||0; calcC(); }
 function CE(i){ carrito.splice(i,1); RC(); }
-function calcC(){
-  var sub=0; for(var i=0;i<carrito.length;i++) sub+=carrito[i].precio*carrito[i].cant;
-  var descTipo=(ge("cdesc-tipo")||{}).value||"monto";
-  var descVal=parseFloat((ge("cdesc")||{}).value)||0;
-  if(descVal<0) descVal=0;
-  var desc;
-  if(descTipo==="pct"){
-    if(descVal>100) descVal=100;
-    desc=sub*(descVal/100);
-  } else {
-    if(descVal>sub) descVal=sub;
-    desc=descVal;
+// ── DESCUENTOS ────────────────────────────────────────────────────────────────
+// Cada concepto puede llevar su propio descuento, en pesos o en porcentaje. El
+// descuento GENERAL se aplica sobre lo que queda despues de los individuales y
+// se SUMA a ellos: no los reemplaza. Sirve para dejar documentado como se cobro
+// un lote grande, concepto por concepto.
+function descuentoDeLinea(l, bruto){
+  var v=parseFloat(l.desc)||0; if(v<0) v=0;
+  var d;
+  if(l.descTipo==="pct"){ if(v>100) v=100; d=bruto*(v/100); }
+  else { if(v>bruto) v=bruto; d=v; }
+  return Math.round(d*100)/100;
+}
+function desgloseCarrito(){
+  var lineas=[], bruto=0, descLineas=0;
+  for(var i=0;i<carrito.length;i++){
+    var l=carrito[i];
+    var b=(l.precio||0)*(l.cant||0);
+    var d=descuentoDeLinea(l,b);
+    bruto+=b; descLineas+=d;
+    lineas.push({idx:i, bruto:b, desc:d, neto:Math.max(0,b-d)});
   }
-  var tot=Math.max(0,sub-desc);
-  var es=ge("csub"); if(es) es.textContent=fmt(sub);
-  var et=ge("ctot"); if(et) et.textContent=fmt(tot);
+  var resto=Math.max(0, bruto-descLineas);
+  var tipoG=(ge("cdesc-tipo")||{}).value||"monto";
+  var valG=parseFloat((ge("cdesc")||{}).value)||0;
+  if(valG<0) valG=0;
+  var descG;
+  if(tipoG==="pct"){ if(valG>100) valG=100; descG=resto*(valG/100); }
+  else { if(valG>resto) valG=resto; descG=valG; }
+  descG=Math.round(descG*100)/100;
+  return { lineas:lineas, bruto:Math.round(bruto*100)/100,
+           descLineas:Math.round(descLineas*100)/100, descGeneral:descG,
+           descTotal:Math.round((descLineas+descG)*100)/100,
+           total:Math.max(0, Math.round((resto-descG)*100)/100),
+           tipoG:tipoG, valG:valG, resto:resto };
+}
+function CD(i,v){ if(carrito[i]){ carrito[i].desc=parseFloat(v)||0; calcC(); } }
+function CDT(i,v){ if(carrito[i]){ carrito[i].descTipo=v; calcC(); } }
+function calcC(){
+  var g=desgloseCarrito();
+  var es=ge("csub"); if(es) es.textContent=fmt(g.bruto);
+  var et=ge("ctot"); if(et) et.textContent=fmt(g.total);
+  // Reflejar en cada renglon lo que se esta descontando ahi
+  for(var i=0;i<g.lineas.length;i++){
+    var et2=ge("cl-neto-"+i);
+    if(et2) et2.textContent=g.lineas[i].desc>0?("-"+fmt(g.lineas[i].desc)):"";
+  }
   var ed=ge("cdesc-monto");
   if(ed){
-    if(desc>0){ ed.style.display="flex"; ed.innerHTML='<span class="sm mut">Descuento aplicado</span><span class="sm" style="color:#f87171">-'+fmt(desc)+(descTipo==="pct"?" ("+descVal+"%)":"")+'</span>'; }
+    if(g.descTotal>0){
+      var partes=[];
+      if(g.descLineas>0) partes.push("por concepto "+fmt(g.descLineas));
+      if(g.descGeneral>0) partes.push("general "+fmt(g.descGeneral)+(g.tipoG==="pct"?" ("+g.valG+"%)":""));
+      ed.style.display="block";
+      ed.innerHTML='<div style="display:flex;justify-content:space-between"><span class="sm mut">Descuento aplicado</span>'+
+        '<span class="sm" style="color:#f87171">-'+fmt(g.descTotal)+'</span></div>'+
+        (partes.length>1?'<div class="sm mut" style="font-size:10.5px;text-align:right;line-height:1.5">'+partes.join("  +  ")+'</div>':'');
+    }
     else ed.style.display="none";
   }
 }
@@ -1070,21 +1410,17 @@ function cobrar(){
       return;
     }
   }
+  // Un solo calculo para la pantalla, el cobro y el ticket.
+  var g=desgloseCarrito();
   var lineas=[]; for(var i=0;i<carrito.length;i++){
     var itC=carrito[i].item||getItem(carrito[i].id);
     lineas.push({itemId:carrito[i].id,cantidad:carrito[i].cant,precio:carrito[i].precio,
+      descuento:(g.lineas[i]||{}).desc||0,
       proveedorId:itC?itC.proveedorId:null, costoProveedor:itC?(itC.costoProveedor||0):0});
   }
   var mpago=(ge("mpago")||{}).value||"efectivo";
-  var descVal2=parseFloat((ge("cdesc")||{}).value)||0;
-  var descTipo2=(ge("cdesc-tipo")||{}).value||"monto";
-  if(descVal2<0) descVal2=0;
-  var sub2=0; for(var i=0;i<lineas.length;i++) sub2+=lineas[i].precio*lineas[i].cantidad;
-  var descMonto;
-  if(descTipo2==="pct"){ if(descVal2>100) descVal2=100; descMonto=sub2*(descVal2/100); }
-  else { if(descVal2>sub2) descVal2=sub2; descMonto=descVal2; }
   var notaVenta=((ge("cnota")||{}).value||"").trim().slice(0,50);
-  RV(lineas,mpago,descMonto,notaVenta); carrito=[];
+  RV(lineas,mpago,g.descGeneral,notaVenta); carrito=[];
   if(ge("cdesc")) ge("cdesc").value="0";
   if(ge("cdesc-tipo")) ge("cdesc-tipo").value="monto";
   if(ge("cnota")) ge("cnota").value="";
@@ -1129,10 +1465,13 @@ function PH(){
   revisarAlertaApa();
 }
 function RV(lineas,mpago,descuento,notas){
-  var total=0; for(var i=0;i<lineas.length;i++) total+=lineas[i].precio*lineas[i].cantidad;
+  // El descuento por concepto se resta primero; el general va sobre el resto.
+  var total=0; for(var i=0;i<lineas.length;i++) total+=Math.max(0,lineas[i].precio*lineas[i].cantidad-(lineas[i].descuento||0));
   total=Math.max(0,total-(descuento||0));
-  DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0,notas:notas||""});
-  for(var i=0;i<DB.items.length;i++) for(var j=0;j<lineas.length;j++) if(DB.items[i].id===lineas[j].itemId) DB.items[i].cantidad=Math.max(0,(DB.items[i].cantidad||0)-lineas[j].cantidad);
+  var ventaId=uid();
+  DB.ventas.unshift({id:ventaId,fecha:diaComercial(),ts:ahora(),lineas:lineas,total:total,mpago:mpago||"efectivo",descuento:descuento||0,notas:notas||""});
+  for(var i=0;i<DB.items.length;i++) for(var j=0;j<lineas.length;j++) if(DB.items[i].id===lineas[j].itemId)
+    setCant(DB.items[i], (DB.items[i].cantidad||0)-lineas[j].cantidad, "venta", "venta "+ventaId.slice(0,8));
   dbSave();
 }
 // Permite agregar o editar la nota de CUALQUIER venta ya registrada, tenga o no
@@ -1289,10 +1628,118 @@ function accionesVenta(v, editable){
   var h='<div class="acc-venta">';
   if(editable) h+='<button class="btn-acc" onclick="editarVenta(\''+v.id+'\')">Editar</button>';
   h+='<button class="btn-acc" onclick="editarNotaVenta(\''+v.id+'\')">'+(tieneNota?"Nota":"+ Nota")+'</button>';
+  h+='<button class="btn-acc" onclick="exportarTicket(\''+v.id+'\')">Ticket</button>';
   h+='</div>';
   if(tieneNota) h+='<div class="nota-v"><b style="color:#c9a96e">Nota:</b> '+esc(v.notas)+'</div>';
   return h;
 }
+// ══════════════════════════════════════════════════════════════════════════════
+// NOTA DE VENTA IMPRIMIBLE (TICKET)
+// ══════════════════════════════════════════════════════════════════════════════
+// Hoja carta, blanco y negro, compacta: el contenido no se estira para llenar la
+// hoja. Estetica de ticket termico (monoespaciada, lineas punteadas) para ahorrar
+// tinta: el unico campo con fondo gris es el TOTAL. Caben alrededor de 40
+// conceptos en una sola hoja.
+// Con acentos de verdad: esto lo lee la clienta, no es texto interno. Se escriben
+// con secuencias \u para no meter caracteres acentuados en el codigo fuente.
+var NEG_NOMBRE="Jardín de Hallazgos";
+var NEG_SUB="Gabinete Vintage";
+var NEG_DIR="Querétaro #22, Col. Roma Norte, Cuauhtémoc, CDMX";
+var NEG_HORARIO="Lunes a sábado de 12:00 a 20:00 h";
+var NEG_WA="55 2189 2305";
+var NEG_MAIL="jardindehallazgos@gmail.com";
+
+function ticketCSS(){
+  return '@page{size:letter;margin:12mm 14mm}'+
+  '*{box-sizing:border-box;margin:0;padding:0}'+
+  'body{font-family:\'Courier New\',Courier,monospace;color:#000;font-size:8.5pt;line-height:1.2}'+
+  '.descuento{font-weight:700}'+
+  '.punteada{border-top:1px dashed #000}.solida{border-top:1.5px solid #000}'+
+  '.cab{display:flex;align-items:center;gap:5mm;padding-bottom:5px}'+
+  '.logo{width:17mm;height:17mm;flex-shrink:0;object-fit:cover;border-radius:2mm}'+
+  '.cabtxt{flex:1}'+
+  '.marca{font-family:Georgia,\'Times New Roman\',serif;font-style:italic;font-size:19pt;line-height:1.05}'+
+  '.gabinete{font-size:8pt;letter-spacing:.3em;text-transform:uppercase;margin-top:2px}'+
+  '.datos{font-size:7.5pt;line-height:1.38;margin-top:4px}'+
+  '.nota{display:flex;justify-content:space-between;font-size:8.6pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:4px 0}'+
+  'table{width:100%;border-collapse:collapse;table-layout:fixed}'+
+  'thead th{font-size:7.2pt;letter-spacing:.07em;text-transform:uppercase;text-align:left;padding:2.5px 4px;font-weight:700;border-bottom:1px dashed #000}'+
+  'tbody td{padding:1px 4px;vertical-align:top}'+
+  'col.cl{width:62px}col.ct{width:30px}col.pr{width:62px}col.ds{width:58px}col.im{width:66px}'+
+  '.k{font-weight:700;letter-spacing:-.02em}'+
+  '.d{font-family:Arial,Helvetica,sans-serif;font-size:8pt;letter-spacing:-.01em}'+
+  '.c{text-align:center}.n{text-align:right;white-space:nowrap}.i{font-weight:700}'+
+  '.cierre{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-top:5px;padding-top:5px}'+
+  '.meta{font-size:8pt;line-height:1.6}.tot{min-width:255px}'+
+  '.tr2{display:flex;justify-content:space-between;gap:16px;padding:2px 5px;font-size:9pt}'+
+  '.total{display:flex;justify-content:space-between;gap:16px;background:#e6e6e6;border:1px solid #000;padding:5px 6px;margin-top:4px;font-size:11.5pt;font-weight:700}'+
+  '.gracias{text-align:center;font-family:Georgia,serif;font-style:italic;font-size:12pt;margin:9px 0 3px;padding-top:8px}'+
+  '.legal{text-align:center;font-size:7.4pt;letter-spacing:.02em}';
+}
+function fechaLargaTicket(f){
+  var M=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  var p=String(f||"").split("-");
+  if(p.length!==3) return String(f||"");
+  return parseInt(p[2],10)+" de "+(M[parseInt(p[1],10)-1]||"")+" de "+p[0];
+}
+function ticketHTML(v){
+  var pagoLabel={efectivo:"Efectivo",tarjeta:"Tarjeta",transferencia:"Transferencia",mixto:"Mixto"};
+  var filas="", piezas=0, conceptos=0, bruto=0, descLineas=0;
+  for(var i=0;i<v.lineas.length;i++){
+    var l=v.lineas[i];
+    if(l.cancelada) continue;
+    var it=getItem(l.itemId);
+    var sku=it?it.sku:(l.sku||"-");
+    var desc=it?(it.descripcion||""):(l.descripcion||"(pieza eliminada)");
+    var b=l.precio*l.cantidad, d=l.descuento||0;
+    bruto+=b; descLineas+=d; piezas+=l.cantidad; conceptos++;
+    filas+='<tr><td class="k">'+esc(sku)+'</td><td class="d">'+esc(desc)+'</td>'+
+      '<td class="c">'+l.cantidad+'</td><td class="n">'+fmt(l.precio)+'</td>'+
+      '<td class="n">'+(d?('-'+fmt(d)):'·')+'</td>'+
+      '<td class="n i">'+fmt(Math.max(0,b-d))+'</td></tr>';
+  }
+  var descGeneral=v.descuento||0;
+  var logo=(DB.config&&DB.config.logo)||"";
+  // Sin logotipo no se deja el hueco: el nombre empieza al margen.
+  var cabLogo=logo?'<img class="logo" src="'+logo+'"/>':'';
+  var h='<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Nota de venta - '+NEG_NOMBRE+'</title>'+
+    '<style>'+ticketCSS()+'<\/style></head><body>';
+  h+='<div class="cab">'+cabLogo+'<div class="cabtxt">'+
+     '<div class="marca">'+NEG_NOMBRE+'</div><div class="gabinete">'+NEG_SUB+'</div>'+
+     '<div class="datos">'+NEG_DIR+'<br/>'+NEG_HORARIO+'<br/>WhatsApp '+NEG_WA+' &nbsp;·&nbsp; '+NEG_MAIL+'</div>'+
+     '</div></div>';
+  h+='<div class="solida"></div>';
+  h+='<div class="nota"><span>Nota de venta</span><span>'+esc(fechaLargaTicket(v.fecha))+'</span></div>';
+  h+='<div class="punteada"></div>';
+  h+='<table><colgroup><col class="cl"/><col/><col class="ct"/><col class="pr"/><col class="ds"/><col class="im"/></colgroup>';
+  h+='<thead><tr><th>Clave</th><th>Descripcion</th><th class="c">Cant</th><th class="n">Precio</th><th class="n">Desc.</th><th class="n">Importe</th></tr></thead>';
+  h+='<tbody>'+filas+'</tbody></table>';
+  h+='<div class="punteada"></div><div class="cierre">';
+  h+='<div class="meta">Forma de pago: <b>'+(pagoLabel[v.mpago||"efectivo"]||v.mpago)+'</b><br/>'+
+     conceptos+' concepto'+(conceptos!==1?'s':'')+' &nbsp;·&nbsp; '+piezas+' pieza'+(piezas!==1?'s':'')+'</div>';
+  h+='<div class="tot">';
+  h+='<div class="tr2"><span>Subtotal</span><span>'+fmt(bruto)+'</span></div>';
+  if(descLineas>0) h+='<div class="tr2"><span>Descuento por concepto</span><span>-'+fmt(descLineas)+'</span></div>';
+  if(descGeneral>0) h+='<div class="tr2"><span>Descuento general</span><span>-'+fmt(descGeneral)+'</span></div>';
+  h+='<div class="total"><span>TOTAL</span><span>'+fmt(Math.max(0,bruto-descLineas-descGeneral))+'</span></div>';
+  h+='</div></div>';
+  h+='<div class="punteada gracias">Gracias por tu compra</div>';
+  h+='<div class="legal">Nota de venta, esto no es un comprobante fiscal.</div>';
+  h+='</body></html>';
+  return h;
+}
+function exportarTicket(vid){
+  var v=buscarVenta(vid);
+  if(!v){ alert("No se encontro la venta."); return; }
+  if(v.cancelacion){ alert("Una devolucion no lleva nota de venta."); return; }
+  var vivas=0; for(var i=0;i<v.lineas.length;i++) if(!v.lineas[i].cancelada) vivas++;
+  if(!vivas){ alert("Esta venta ya no tiene piezas: todas fueron canceladas."); return; }
+  var w=window.open("","_blank","width=820,height=900");
+  if(!w){ alert("Permite ventanas emergentes para poder imprimir la nota."); return; }
+  w.document.write(ticketHTML(v)); w.document.close();
+  w.onload=function(){ setTimeout(function(){ w.print(); },250); };
+}
+
 function editarNotaVenta(vid){
   var v=null; for(var i=0;i<DB.ventas.length;i++) if(DB.ventas[i].id===vid){v=DB.ventas[i];break;}
   if(!v) return;
@@ -1322,22 +1769,18 @@ function cancelarVenta(vid,lidx){
   // Calcular el precio REALMENTE pagado por esta linea, prorrateando el descuento
   // global de la venta segun el peso de esta linea en el subtotal (evita devolver
   // de mas cuando la venta tuvo descuento).
-  var subtotalVenta=0;
-  for(var k=0;k<v.lineas.length;k++) subtotalVenta+=v.lineas[k].precio*v.lineas[k].cantidad;
+  // Un solo criterio para todo el programa: precioEfectivoLinea ya contempla el
+  // descuento del concepto y la parte proporcional del descuento general.
   var subtotalLinea=linea.precio*linea.cantidad;
-  var descuentoVenta=v.descuento||0;
-  var montoADevolver=subtotalLinea;
-  if(descuentoVenta>0 && subtotalVenta>0){
-    var proporcion=subtotalLinea/subtotalVenta;
-    montoADevolver=subtotalLinea-(descuentoVenta*proporcion);
-  }
-  montoADevolver=Math.max(0,Math.round(montoADevolver*100)/100);
+  var descuentoVenta=(v.descuento||0)+(linea.descuento||0);
+  var montoADevolver=Math.max(0,Math.round(precioEfectivoLinea(v,linea)*linea.cantidad*100)/100);
 
   var msg="Cancelar venta de: "+desc+"? La pieza regresara al inventario.";
   if(descuentoVenta>0) msg+="\n\nEsta venta tuvo descuento. Se devolvera el monto real pagado por esta pieza: "+fmt(montoADevolver)+" (no el precio de lista "+fmt(subtotalLinea)+").";
   if(!confirm(msg)) return;
   DB.ventas.unshift({id:uid(),fecha:diaComercial(),ts:ahora(),lineas:[{itemId:linea.itemId,cantidad:linea.cantidad,precio:linea.precio}],total:-montoADevolver,mpago:v.mpago||"efectivo",cancelacion:true,refVenta:vid});
-  for(var i=0;i<DB.items.length;i++) if(DB.items[i].id===linea.itemId){DB.items[i].cantidad=(DB.items[i].cantidad||0)+linea.cantidad;break;}
+  for(var i=0;i<DB.items.length;i++) if(DB.items[i].id===linea.itemId){
+    setCant(DB.items[i], (DB.items[i].cantidad||0)+linea.cantidad, "cancelacion", "venta "+String(vid).slice(0,8)); break; }
   v.lineas[lidx].cancelada=true;
   dbSave(); PH();
   var tr=ge("tab-reportes"); if(tr&&tr.classList.contains("on")) RR();
@@ -1809,7 +2252,11 @@ function ingresoRealMes(ym){
       // es lo que compensa el total completo de la venta original, que nunca
       // se modifica cuando se cancela solo una de sus lineas.
       ingr+=v.total;
-      var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
+      // El IVA y el ISR si se revierten al cancelar una venta: no se causaron.
+      // La COMISION DE LA TERMINAL no: el banco ya la cobro y no la regresa
+      // cuando se devuelve una compra. Antes se restaba tambien, y eso inflaba
+      // la ganancia del mes con un dinero que nunca volvio a la cuenta.
+      var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr;
       continue;
     }
     if(v.esApartado){
@@ -2125,7 +2572,11 @@ function cerrarMes(ym){
     if(v.cancelacion){
       devol+=Math.abs(v.total);
       ingr+=v.total; // v.total ya es negativo: compensa el total de la venta original que no se modifico
-      var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr; accTerm-=fc.term;
+      // El IVA y el ISR si se revierten al cancelar una venta: no se causaron.
+      // La COMISION DE LA TERMINAL no: el banco ya la cobro y no la regresa
+      // cuando se devuelve una compra. Antes se restaba tambien, y eso inflaba
+      // la ganancia del mes con un dinero que nunca volvio a la cuenta.
+      var fc=fiscal(Math.abs(v.total),mp); accIva-=fc.iva; accIsr-=fc.isr;
       pagoTot[mp]=(pagoTot[mp]||0)+v.total;
     } else if(v.esApartado){
       // La venta de apartado representa la pieza cubierta totalmente ESTE mes (fecha de liquidacion).
@@ -2276,20 +2727,79 @@ function RGrafica(){
 }
 
 // ── ETIQUETAS ────────────────────────────────────────────────────────────────
+// ── TAMANO DE ETIQUETA ────────────────────────────────────────────────────────
+// Antes estaba clavado en 50x28mm. Ahora se guarda en la configuracion y los
+// tipos de letra se CALCULAN a partir de la medida, asi la etiqueta se ve igual
+// de equilibrada en cualquier rollo sin tener que tocar el programa.
+// Termica directa 203 DPI, negro puro, sin codigo de barras (lector a futuro).
+var ETIQ_ANCHO_DEF=50, ETIQ_ALTO_DEF=25;
+function etiqMedida(){
+  var c=DB.config||{};
+  var w=parseFloat(c.etiqAncho); if(!isFinite(w)||w<20||w>80) w=ETIQ_ANCHO_DEF;
+  var h=parseFloat(c.etiqAlto);  if(!isFinite(h)||h<10||h>60) h=ETIQ_ALTO_DEF;
+  return {w:w, h:h};
+}
+function etiqGuardarMedida(){
+  var w=parseFloat((ge("etq-w")||{}).value), h=parseFloat((ge("etq-h")||{}).value);
+  var err=ge("etq-err"); if(err) err.textContent="";
+  if(!isFinite(w)||w<20||w>80){ if(err) err.textContent="El ancho debe estar entre 20 y 80 mm (lo que acepta la impresora)."; return; }
+  if(!isFinite(h)||h<10||h>60){ if(err) err.textContent="El alto debe estar entre 10 y 60 mm."; return; }
+  DB.config=DB.config||{};
+  DB.config.etiqAncho=w; DB.config.etiqAlto=h;
+  dbSave(); epbPrev();
+  var not=ge("etq-nota"); if(not) not.textContent="Guardado: "+w+" x "+h+" mm";
+}
+// La tipografia sale de DOS limites, y manda el mas chico de los dos:
+//   - el alto de la etiqueta (el precio se escala contra la referencia aprobada
+//     de 26pt sobre 28mm);
+//   - el ancho CONTRA EL TEXTO MAS LARGO del lote que se va a imprimir, porque
+//     todas las etiquetas comparten un mismo estilo.
+// Sin el segundo limite, una clave larga con precio de cinco cifras se sale de
+// la etiqueta en los rollos angostos.
+var PT_A_MM=25.4/72;
+function etiqPts(w,h,nClave,nPrecio){
+  var padX=Math.max(1.5,w*0.06), padY=Math.max(1.2,h*0.07);
+  var utilW=w-padX*2, utilH=h-padY*2;
+  var util28=28-Math.max(1.2,28*0.07)*2;
+  // Courier New (monospace) ~0.60 em por caracter; Arial negra ~0.62 em.
+  var topeClave  = utilW/(0.60*PT_A_MM*Math.max(1,nClave||10));
+  var topePrecio = utilW/(0.62*PT_A_MM*Math.max(1,nPrecio||6));
+  var ptC=Math.max(5,Math.min(12, Math.min(w*0.21, topeClave)));
+  var ptP=Math.max(8,Math.min(34, Math.min(26*(utilH/util28), topePrecio)));
+  // El precio nunca debe quedar mas chico que la clave: es lo que lee el cliente.
+  if(ptP<ptC) ptC=Math.max(5,ptP*0.85);
+  return {ptC:ptC, ptP:ptP, padX:padX, padY:padY, gap:Math.max(0.5,h*0.055)};
+}
+function etiqCSS(w,h,nClave,nPrecio){
+  var s=etiqPts(w,h,nClave,nPrecio);
+  var padX=s.padX, padY=s.padY, ptC=s.ptC, ptP=s.ptP, gap=s.gap;
+  var css='@page{size:'+w+'mm '+h+'mm;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,Helvetica,sans-serif}';
+  css+='.tag{width:'+w+'mm;height:'+h+'mm;padding:'+padY.toFixed(2)+'mm '+padX.toFixed(2)+'mm;page-break-after:always;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;overflow:hidden}';
+  css+='.tc{font-size:'+ptC.toFixed(1)+'pt;font-weight:700;font-family:\'Courier New\',monospace;color:#000;letter-spacing:0.4pt;margin-bottom:'+gap.toFixed(2)+'mm;white-space:nowrap}';
+  css+='.tp{font-size:'+ptP.toFixed(1)+'pt;font-weight:900;color:#000;line-height:1;letter-spacing:-0.5pt;white-space:nowrap}';
+  return css;
+}
+// Texto de la clave tal como se imprime: CLAVE - TALLA
+function etiqTextoClave(it){
+  return String(it.sku||"")+(it.talla?" · "+it.talla:"");
+}
+// Estilo para TODO un lote: se mide contra la clave y el precio mas largos.
+function etiqCSSLote(items){
+  var m=etiqMedida(), nC=0, nP=0;
+  for(var i=0;i<(items||[]).length;i++){
+    nC=Math.max(nC, etiqTextoClave(items[i]).length);
+    nP=Math.max(nP, fmt(items[i].precioVenta).length);
+  }
+  return etiqCSS(m.w, m.h, nC||10, nP||6);
+}
 function makeTag(it){
-  // Optimizada para Xprinter XP-365B: termica directa 203 DPI, etiqueta 50x28mm.
-  // Sin codigo de barras (lector pendiente a futuro). Negro puro para impresion termica nitida.
-  var sk=esc(it.sku||"");
-  var css='@page{size:50mm 28mm;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,Helvetica,sans-serif}';
-  css+='.tag{width:50mm;height:28mm;padding:2mm 3mm;page-break-after:always;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;overflow:hidden}';
-  css+='.tc{font-size:10pt;font-weight:700;font-family:\'Courier New\',monospace;color:#000;letter-spacing:0.5pt;margin-bottom:1.5mm}';
-  css+='.tp{font-size:26pt;font-weight:900;color:#000;line-height:1;letter-spacing:-0.5pt}';
-  css+='.tt{font-size:9pt;font-weight:700;color:#000;margin-top:1.5mm;letter-spacing:0.5pt}';
-  return {sku:sk, precio:fmt(it.precioVenta), talla:esc(it.talla||""), css:css};
+  return {sku:esc(it.sku||""), precio:fmt(it.precioVenta), talla:esc(it.talla||""), css:etiqCSSLote([it])};
 }
 function printTags(items, copies){
   if(!items.length){alert("Selecciona al menos una prenda");return;}
-  var t=makeTag(items[0]); // get css from first item
+  // Un solo estilo para todo el lote, medido contra la clave y el precio mas
+  // largos: asi ninguna etiqueta del lote se desborda.
+  var t={css:etiqCSSLote(items)};
   var tags="";
   for(var r=0;r<copies;r++){
     for(var i=0;i<items.length;i++){
@@ -2340,15 +2850,29 @@ function epbNone(){ epbSel={}; epbRenderLista(""); }
 function epbPrev(){
   var sel=[]; for(var i=0;i<DB.items.length;i++) if(epbSel[DB.items[i].id]) sel.push(DB.items[i]);
   var cp=parseInt((ge("epb-cp")||{}).value)||1;
+  // La vista previa respeta la PROPORCION real del rollo configurado, para que
+  // lo que se ve en pantalla se parezca a lo que sale impreso.
+  var m=etiqMedida();
+  var anchoPx=150, altoPx=Math.round(anchoPx*(m.h/m.w));
+  var escala=anchoPx/(m.w*3.7795);                 // px de pantalla por px de etiqueta real
+  var nC=0,nP=0;
+  for(var i=0;i<sel.length;i++){ nC=Math.max(nC,etiqTextoClave(sel[i]).length); nP=Math.max(nP,fmt(sel[i].precioVenta).length); }
+  var s=etiqPts(m.w, m.h, nC||10, nP||6);
+  var pxPrecio=Math.max(7,Math.round(s.ptP*1.333*escala));
+  var pxClave =Math.max(5,Math.round(s.ptC*1.333*escala));
   var h=""; for(var i=0;i<Math.min(sel.length,2);i++){
     var it=sel[i];
-    h+='<div style="background:#fff;border-radius:5px;padding:8px 6px;margin-bottom:7px;color:#000;width:150px;display:flex;flex-direction:column;gap:3px;align-items:center;text-align:center">';
-    h+='<div style="font-size:9px;font-weight:700;font-family:monospace;letter-spacing:0.5px">'+esc(it.sku)+'</div>';
-    h+='<div style="font-size:24px;font-weight:900;line-height:1">'+fmt(it.precioVenta)+'</div>';
+    h+='<div style="background:#fff;border-radius:4px;color:#000;width:'+anchoPx+'px;height:'+altoPx+'px;margin-bottom:7px;display:flex;flex-direction:column;gap:'+Math.round(2*escala)+'px;align-items:center;justify-content:center;text-align:center;overflow:hidden">';
+    h+='<div style="font-size:'+pxClave+'px;font-weight:700;font-family:monospace;letter-spacing:0.4px;white-space:nowrap">'+esc(it.sku)+(it.talla?' &middot; '+esc(it.talla):'')+'</div>';
+    h+='<div style="font-size:'+pxPrecio+'px;font-weight:900;line-height:1;white-space:nowrap">'+fmt(it.precioVenta)+'</div>';
     h+='</div>';
   }
   if(sel.length>2) h+='<div class="sm mut" style="margin-bottom:9px">...y '+(sel.length-2)+' mas</div>';
   var ep=ge("epb-prev"); if(ep) ep.innerHTML=h;
+  var fmtEl=ge("etq-formato"); if(fmtEl) fmtEl.textContent="Formato "+m.w+" x "+m.h+" mm";
+  var iw=ge("etq-w"), ih=ge("etq-h");
+  if(iw && document.activeElement!==iw) iw.value=m.w;
+  if(ih && document.activeElement!==ih) ih.value=m.h;
   var btn=ge("epb-btn"); if(btn) btn.textContent="Imprimir "+(sel.length*cp)+" etiqueta"+(sel.length*cp!==1?"s":"");
 }
 function epbImprimir(){
@@ -2526,7 +3050,7 @@ function doImp(){
     var fRaw=iFi>=0?gv(row,iFi):"";
     var skuVal=iCl>=0?gv(row,iCl):"";
     if(!skuVal) skuVal=pnm.slice(0,3).toUpperCase()+"-"+String(ri).padStart(4,"0");
-    var catRaw=iCt>=0?gv(row,iCt):"";var catNorm=normCat(catRaw);var epRaw=iEp>=0?gv(row,iEp):"";var epNorm=normEp(epRaw);var tlRaw=iTl>=0?gv(row,iTl):"";var tlNorm=normTalla(tlRaw);allI.push({id:uid(),creadoEn:Date.now(),sku:skuVal,descripcion:iDs>=0?gv(row,iDs):"",categoria:catNorm,epoca:epNorm,talla:tlNorm,cantidad:cant,cantidadInicial:cant,proveedorId:provId,costoProveedor:iCo>=0?gn(row,iCo):0,precioVenta:iPv>=0?gn(row,iPv):0,fechaIngreso:fRaw?parseFecha(fRaw):hoy(),notas:iNo>=0?gv(row,iNo):""});
+    var catRaw=iCt>=0?gv(row,iCt):"";var catNorm=normCat(catRaw);var epRaw=iEp>=0?gv(row,iEp):"";var epNorm=normEp(epRaw);var tlRaw=iTl>=0?gv(row,iTl):"";var tlNorm=normTalla(tlRaw);allI.push({id:uid(),creadoEn:Date.now(),sku:skuVal,descripcion:iDs>=0?gv(row,iDs):"",categoria:catNorm,epoca:epNorm,talla:tlNorm,cantidad:cant,cantidadInicial:cant,mov:[{f:hoy(),ts:Date.now(),de:0,a:cant,c:"importacion",r:""}],proveedorId:provId,costoProveedor:iCo>=0?gn(row,iCo):0,precioVenta:iPv>=0?gn(row,iPv):0,fechaIngreso:fRaw?parseFecha(fRaw):hoy(),notas:iNo>=0?gv(row,iNo):""});
   }
   if(!allI.length){alert("No se encontraron prendas.");return;}
   var exS={}; for(var i=0;i<DB.items.length;i++) exS[DB.items[i].sku]=true;
@@ -2697,6 +3221,7 @@ function pagarYReservarCarrito(){
   }
   var piezas=[];
   // Prorratear el precio de lista de cada pieza segun el precio final acordado (con descuento).
+  var apaId=uid();
   var subtotalCarrito=0; for(var i=0;i<carrito.length;i++) subtotalCarrito+=carrito[i].precio*carrito[i].cant;
   var factorDescuento = subtotalCarrito>0 ? (precio/subtotalCarrito) : 1;
   for(var i=0;i<carrito.length;i++){
@@ -2705,12 +3230,12 @@ function pagarYReservarCarrito(){
     for(var c=0;c<l.cant;c++){
       piezas.push({itemId:it.id, sku:it.sku, descripcion:it.descripcion, precio:precioConDescuento});
     }
-    it.cantidad=Math.max(0,(it.cantidad||0)-l.cant);
+    setCant(it, (it.cantidad||0)-l.cant, "apartado", "apartado "+apaId.slice(0,8));
   }
   // El pago completo se registra como el abono (cubre el total)
   var abonos=[{fecha:diaComercial(),monto:precio,mpago:mpago}];
   var apa={
-    id:uid(), fecha:hoy(), fechaLimite:limite,
+    id:apaId, fecha:hoy(), fechaLimite:limite,
     clienteNombre:cli, clienteContacto:con,
     piezas:piezas, precio:precio, abonos:abonos, estado:"activo", notas:notas
   };
@@ -2745,6 +3270,7 @@ function guardarApartadoCarrito(){
   // (que puede tener descuento aplicado, automatico o editado a mano). Sin esto,
   // cada pieza guardaba su precio de lista completo, y al liquidar el apartado
   // la deuda a proveedor y el precio de venta registrado no reflejaban el descuento.
+  var apaId=uid();
   var subtotalCarrito=0; for(var i=0;i<carrito.length;i++) subtotalCarrito+=carrito[i].precio*carrito[i].cant;
   var factorDescuento = subtotalCarrito>0 ? (precio/subtotalCarrito) : 1;
   for(var i=0;i<carrito.length;i++){
@@ -2753,12 +3279,12 @@ function guardarApartadoCarrito(){
     for(var c=0;c<l.cant;c++){
       piezas.push({itemId:it.id, sku:it.sku, descripcion:it.descripcion, precio:precioConDescuento});
     }
-    it.cantidad=Math.max(0,(it.cantidad||0)-l.cant);
+    setCant(it, (it.cantidad||0)-l.cant, "apartado", "apartado "+apaId.slice(0,8));
   }
   var abonos=[];
   if(anticipo>0) abonos.push({fecha:diaComercial(),monto:anticipo,mpago:mpago});
   var apa={
-    id:uid(), fecha:hoy(), fechaLimite:limite,
+    id:apaId, fecha:hoy(), fechaLimite:limite,
     clienteNombre:cli, clienteContacto:con,
     piezas:piezas, precio:precio, abonos:abonos, estado:"activo", notas:notas
   };
@@ -2878,7 +3404,7 @@ function cancelarApartado(apaId){
   if(!confirm(msg)) return;
   for(var pi=0;pi<piezas.length;pi++){
     var it=getItem(piezas[pi].itemId);
-    if(it) it.cantidad=(it.cantidad||0)+1;
+    if(it) setCant(it, (it.cantidad||0)+1, "apa_cancel", "apartado "+String(apa.id).slice(0,8));
   }
   // Register saldo a favor if there was any payment
   if(abonado>0){
@@ -3016,7 +3542,7 @@ function eliminarApartado(apaId){
   if(apa.estado==="activo"){
     for(var pi=0;pi<piezas.length;pi++){
       var it=getItem(piezas[pi].itemId);
-      if(it) it.cantidad=(it.cantidad||0)+1;
+      if(it) setCant(it, (it.cantidad||0)+1, "apa_elim", "apartado "+String(apa.id).slice(0,8));
     }
   }
   // If liquidated, remove the associated sale
@@ -3967,6 +4493,7 @@ ge("frest").addEventListener("change",function(e){
   r.readAsText(file); e.target.value="";
 });
 
+restaurarSesion();   // si esta pestana ya estaba desbloqueada, recargar no vuelve a pedir la contrasena
 dbLoad();
 ge("tab-pos").classList.add("on");
 ge("btn-pos").classList.add("on");
