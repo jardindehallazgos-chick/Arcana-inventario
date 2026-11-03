@@ -2231,6 +2231,16 @@ function RChecklist(){
     if(!excelHecho) faltan.push("7");
     var remate = faltan.length ? (" Falta"+(faltan.length>1?"n":"")+" el paso "+faltan.join(" y el ")+".") : " Cierre completo.";
     h+='<div style="padding:10px;background:#141a10;border:1px solid #3a4a20;border-radius:8px;color:#a3c76d;font-size:13px;margin:6px 0 8px">El mes <b>'+nombreM+'</b> ya esta cerrado y archivado.'+remate+'</div>';
+    // Un mes cerrado SIN VENTAS casi siempre se cerro por error (al probar el
+    // panel, o al empezar el mes). Como el archivo de ese mes no contiene nada,
+    // se puede reabrir sin perder un dato, y asi el cierre de verdad al final
+    // del mes si se puede hacer.
+    if(mesReabrible(ymCerrar)){
+      h+='<div style="padding:10px;background:#1a1510;border:1px solid #4a3a20;border-radius:8px;margin:0 0 10px">'+
+         '<div style="color:#f59e0b;font-size:13px;margin-bottom:4px"><b>'+nombreM+' se cerro sin ninguna venta.</b></div>'+
+         '<div class="sm mut" style="line-height:1.55;margin-bottom:8px">Lo mas probable es que haya sido por error. Mientras siga cerrado, el cierre de verdad al terminar el mes no se va a poder hacer, y la deuda a proveedores de este mes no se calcularia. El archivo de este mes no contiene nada, asi que reabrirlo no pierde ningun dato.</div>'+
+         boton("Reabrir "+nombreM,'reabrirMes("'+ymCerrar+'")',true,"#f59e0b")+'</div>';
+    }
     h+='<div class="sm mut" style="margin-bottom:10px">El Reporte general de ventas y el de Consignatarios ya no estan disponibles para este mes: su detalle linea por linea se archivo al cerrar. Descargalos <b>antes</b> de cerrar el mes siguiente.</div>';
   } else {
     h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
@@ -2242,7 +2252,10 @@ function RChecklist(){
     "Cancela cualquier venta equivocada ANTES de continuar. Se hace desde el historial de abajo.", "");
   h+=fila(yaCerrado||respaldoHoyOk, "2. Respalda",
     respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.",
-    boton("Respaldar","respaldar()",!respaldoHoyOk&&!yaCerrado));
+    // Respaldar SIEMPRE se puede: nunca hace dano y es la red de seguridad de
+    // todo lo demas. Antes se apagaba al cerrar el mes y al tener respaldo del
+    // dia, y entonces parecia un boton roto.
+    boton("Respaldar","respaldar()",true));
   h+=fila(yaCerrado||descargado, "3. Descarga el CSV del mes",
     descargado?"Descargado.":"Conserva el detalle completo de las ventas.",
     boton("Descargar CSV",'descargarMes("'+ymCerrar+'")',!descargado&&!yaCerrado));
@@ -2381,7 +2394,14 @@ function RMeses(){
     h+='<div id="mes-body-'+ym+'" style="display:'+(abierto?"block":"none")+'">';
     h+='<div style="padding:8px 13px;border-top:1px solid #2a2620;display:flex;gap:8px;flex-wrap:wrap">';
     h+='<button class="btn btns" onclick="descargarMes(\''+ym+'\')">Descargar mes (CSV)</button>';
-    h+='<button class="btnr" style="padding:5px 11px;font-size:11px" onclick="cerrarMes(\''+ym+'\')">Cerrar y archivar mes</button>';
+    // Si el mes YA esta archivado no se ofrece cerrarlo otra vez: antes el boton
+    // seguia ahi y un segundo clic duplicaba el mes en el archivo.
+    if(archivoDe(ym)){
+      h+='<span class="sm" style="color:#a3c76d;align-self:center">Ya cerrado y archivado.</span>';
+      if(mesReabrible(ym)) h+='<button class="btn btns" style="color:#f59e0b;border-color:#f59e0b44" onclick="reabrirMes(\''+ym+'\')">Reabrir mes</button>';
+    } else {
+      h+='<button class="btnr" style="padding:5px 11px;font-size:11px" onclick="cerrarMes(\''+ym+'\')">Cerrar y archivar mes</button>';
+    }
     h+='</div>';
     // "tbl-stack": en celular cada venta se muestra como tarjeta (fecha, pago y
     // total en una linea; prendas debajo a todo el ancho) en vez de una tabla
@@ -2587,11 +2607,58 @@ function apaOkGlobal(msg){
   else console.log(msg);
 }
 
+// ── REABRIR UN MES CERRADO POR ERROR ──────────────────────────────────────────
+// Un mes archivado SIN NINGUNA VENTA no contiene nada: se puede reabrir sin
+// perder un solo dato. Pasa cuando se cierra un mes por equivocacion, al probar
+// el panel o al empezar el mes. Sin esto, ese mes queda cerrado para siempre y
+// el cierre de verdad, al final del mes, ya no se puede hacer.
+// Un mes CON ventas archivadas NO se puede reabrir: su detalle ya no existe.
+function archivoDe(ym){
+  for(var i=0;i<(DB.archivo||[]).length;i++) if(DB.archivo[i].mes===ym) return DB.archivo[i];
+  return null;
+}
+function mesVacio(a){
+  if(!a) return false;
+  return (a.ventas||0)===0 && (a.piezas||0)===0 && Math.abs(a.ingreso||0)<0.005 && Math.abs(a.costo||0)<0.005;
+}
+function mesReabrible(ym){ return mesVacio(archivoDe(ym)); }
+function reabrirMes(ym){
+  var a=archivoDe(ym);
+  if(!a){ alert("Ese mes no esta archivado."); return; }
+  if(!mesVacio(a)){
+    alert("No se puede reabrir "+nombreMes(ym)+": tiene ventas archivadas.\n\nAl cerrarlo, su detalle linea por linea se guardo como resumen y las ventas salieron de los datos activos. Reabrirlo dejaria el mes vacio y descuadrado.");
+    return;
+  }
+  if(!confirm("Reabrir "+nombreMes(ym)+"?\n\nEse mes se cerro sin ninguna venta registrada, asi que no hay nada que perder: solo se quita la marca de cerrado para que puedas hacer el cierre de verdad cuando termine el mes.")) return;
+  for(var i=DB.archivo.length-1;i>=0;i--) if(DB.archivo[i].mes===ym) DB.archivo.splice(i,1);
+  try{ if(window._mesesDescargados) window._mesesDescargados[ym]=false; }catch(e){}
+  dbSave();
+  if(ge("checklist-cierre")) RChecklist();
+  RR();
+  apaOkGlobal(nombreMes(ym)+" quedo reabierto.");
+}
+
 function cerrarMes(ym){
+  // No cerrar DOS VECES el mismo mes. Antes no se revisaba, y un segundo cierre
+  // agregaba otro registro del mismo mes al archivo: el desempeno mensual lo
+  // contaba dos veces y la deuda a proveedores quedaba duplicada.
+  if(archivoDe(ym)){
+    alert(nombreMes(ym)+" ya esta cerrado y archivado.\n\nNo se vuelve a cerrar: hacerlo duplicaria el mes en el desempeno mensual."+
+      (mesReabrible(ym)?"\n\nComo se cerro sin ninguna venta, puedes reabrirlo con el boton \"Reabrir mes\" del panel de cierre.":""));
+    return;
+  }
   // Require download first
   if(!window._mesesDescargados||!window._mesesDescargados[ym]){
     alert("Debes descargar el mes antes de cerrarlo.\n\nUsa el boton \"Descargar mes (CSV)\" primero. Asi conservas el detalle completo de las ventas.");
     return;
+  }
+  // Cerrar un mes SIN ventas casi siempre es un error (se cierra el mes en curso
+  // al empezarlo, o al probar el panel). Antes se cerraba sin chistar y el mes
+  // quedaba bloqueado para el cierre de verdad.
+  var hayVentasMes=false;
+  for(var i=0;i<DB.ventas.length;i++) if((DB.ventas[i].fecha||"").slice(0,7)===ym){ hayVentasMes=true; break; }
+  if(!hayVentasMes){
+    if(!confirm("OJO: "+nombreMes(ym)+" no tiene ninguna venta registrada.\n\nSi el mes apenas va empezando, NO lo cierres: las ventas que registres despues ya no se podrian cerrar ni cobrar a proveedores.\n\nCerrar de todas formas?")) return;
   }
   // Compute month summary
   var pagoTot={efectivo:0,tarjeta:0,transferencia:0};
