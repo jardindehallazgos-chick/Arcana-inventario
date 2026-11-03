@@ -996,52 +996,57 @@ function renderMobCards(list){
     var pv=getProv(it.proveedorId);
     var g=ganancia(it);
     var dup=dups[it.sku];
+    // Ficha COMPACTA: con un inventario de miles de piezas, cada renglon de mas
+    // son decenas de pantallas de scroll. Antes cada ficha media ~370px por los
+    // dos botones grandes y el bloque de precio/costo/ganancia con sus rotulos.
+    // Ahora la ficha entera abre el detalle al tocarla y solo queda un boton de
+    // editar; los tres numeros van en un renglon, sin rotulos.
     var card=document.createElement("div");
     card.className="mob-card";
-    var topDiv=document.createElement("div");
-    topDiv.style.cssText="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px";
-    var skuDiv=document.createElement("div");
+
+    var fila1=document.createElement("div");
+    fila1.className="mc-fila1";
     var skuSpan=document.createElement("div");
     skuSpan.className="mob-card-sku";
     if(dup){var ex=document.createElement("span");ex.style.color="#f87171";ex.textContent="! ";skuSpan.appendChild(ex);}
     skuSpan.appendChild(document.createTextNode(it.sku||""));
+    var badge=document.createElement("span");
+    badge.className="pill "+(((it.cantidad||0)>0)?"pg":"pr");
+    badge.textContent=String(it.cantidad||0);
+    fila1.appendChild(skuSpan);
+    fila1.appendChild(badge);
+    card.appendChild(fila1);
+
     var descDiv=document.createElement("div");
     descDiv.className="mob-card-desc";
     descDiv.textContent=it.descripcion||"";
-    skuDiv.appendChild(skuSpan);
-    skuDiv.appendChild(descDiv);
-    if(pv){var pvDiv=document.createElement("div");pvDiv.className="sm mut";pvDiv.textContent=pv.nombre;skuDiv.appendChild(pvDiv);}
-    var badge=document.createElement("span");
-    badge.className="pill "+(((it.cantidad||0)>0)?"pg":"pr");
-    badge.style.marginLeft="8px";
-    badge.textContent=String(it.cantidad||0);
-    topDiv.appendChild(skuDiv);
-    topDiv.appendChild(badge);
-    card.appendChild(topDiv);
-    var statsDiv=document.createElement("div");
-    statsDiv.style.cssText="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px";
-    function mkStat(label,val,cls){
-      var d=document.createElement("div");
-      var l=document.createElement("div");l.className="mob-card-label";l.textContent=label;
-      var v=document.createElement("div");if(cls)v.className=cls;v.textContent=val;
-      d.appendChild(l);d.appendChild(v);return d;
+    card.appendChild(descDiv);
+
+    var fila3=document.createElement("div");
+    fila3.className="mc-fila3";
+    var datos=document.createElement("div");
+    datos.className="mc-datos";
+    function trozo(txt,cls){
+      var s=document.createElement("span"); if(cls) s.className=cls; s.textContent=txt; return s;
     }
-    statsDiv.appendChild(mkStat("Precio",fmt(it.precioVenta),"gold"));
-    statsDiv.appendChild(mkStat("Costo",fmt(it.costoProveedor),"mut sm"));
-    statsDiv.appendChild(mkStat("Ganancia",fmt(g),g>=0?"gp sm":"gn sm"));
-    card.appendChild(statsDiv);
-    var btnRow=document.createElement("div");
-    btnRow.style.cssText="display:flex;gap:6px";
-    var btnVer=document.createElement("button");
-    btnVer.className="btn btns";btnVer.style.flex="1";btnVer.textContent="Ver";
+    if(pv){ datos.appendChild(trozo(pv.nombre,"mut")); datos.appendChild(trozo(" · ","sep")); }
+    datos.appendChild(trozo(fmt(it.precioVenta),"gold"));
+    datos.appendChild(trozo(" · ","sep"));
+    datos.appendChild(trozo("costo "+fmt(it.costoProveedor),"mut"));
+    datos.appendChild(trozo(" · ","sep"));
+    datos.appendChild(trozo("gana "+fmt(g), g>=0?"gp":"gn"));
+    fila3.appendChild(datos);
     var btnEdit=document.createElement("button");
-    btnEdit.className="btna btns";btnEdit.style.flex="1";btnEdit.textContent="Editar";
+    btnEdit.className="mc-editar";
+    btnEdit.textContent="Editar";
+    fila3.appendChild(btnEdit);
+    card.appendChild(fila3);
+
     (function(id){
-      btnVer.addEventListener("click",function(){aDet(id);});
-      btnEdit.addEventListener("click",function(){aItem(id);});
+      // Tocar la ficha abre el detalle; el boton de editar no debe disparar las dos.
+      card.addEventListener("click",function(){ aDet(id); });
+      btnEdit.addEventListener("click",function(ev){ ev.stopPropagation(); aItem(id); });
     })(it.id);
-    btnRow.appendChild(btnVer);btnRow.appendChild(btnEdit);
-    card.appendChild(btnRow);
     el.appendChild(card);
   }
 }
@@ -1168,6 +1173,12 @@ function aItem(id){
   h+='<div id="fprev" class="fb" style="display:none"></div>';
   h+='<div class="fld"><label class="lbl">Fecha de ingreso</label><input class="inp" type="date" id="ffi" value="'+(it?it.fechaIngreso:hoy())+'"/></div>';
   h+='<div class="fld"><label class="lbl">Notas</label><textarea class="inp" id="fno" rows="2">'+esc(it?it.notas:"")+'</textarea></div>';
+  // Apagada por omision. Por ahora SOLO controla si la etiqueta lleva la leyenda;
+  // el sistema de renta en si todavia no existe.
+  h+='<div class="fld"><label style="display:flex;align-items:center;gap:9px;cursor:pointer;margin:0">'+
+     '<input type="checkbox" id="frt"'+((it&&it.dispRenta)?" checked":"")+' style="width:16px;height:16px;flex-shrink:0;accent-color:#c9a96e"/>'+
+     '<span class="lbl" style="margin:0">Disponible para renta</span></label>'+
+     '<div class="sm mut" style="margin-top:4px;line-height:1.5">Agrega la leyenda DISPONIBLE PARA RENTA a la etiqueta de esta pieza.</div></div>';
   h+='<div style="display:flex;justify-content:space-between;padding-top:7px">'+(it?'<button class="btnr" onclick="delItem(\''+id+'\')">Eliminar</button>':'<div></div>');
   h+='<button class="btna" onclick="saveItem(\''+( id||"")+'\')" >Guardar</button></div>';
   OM(it?"Editar prenda":"Nueva prenda",h);
@@ -1205,7 +1216,7 @@ function saveItem(id){
   var cantTocada=(cant!==cantOrig);
   // La cantidad NO va dentro de d: se aplica aparte y solo si la tocaste, para que
   // pase siempre por setCant y quede en la bitacora.
-  var d={sku:sku,descripcion:ge("fde").value,categoria:ge("fct").value,epoca:ge("fep").value,talla:ge("ftl")?ge("ftl").value:"",proveedorId:ge("fpr").value,costoProveedor:parseFloat(ge("fco").value)||0,precioVenta:parseFloat(ge("fpr2").value)||0,fechaIngreso:ge("ffi").value||hoy(),notas:ge("fno").value};
+  var d={sku:sku,descripcion:ge("fde").value,categoria:ge("fct").value,epoca:ge("fep").value,talla:ge("ftl")?ge("ftl").value:"",proveedorId:ge("fpr").value,costoProveedor:parseFloat(ge("fco").value)||0,precioVenta:parseFloat(ge("fpr2").value)||0,fechaIngreso:ge("ffi").value||hoy(),notas:ge("fno").value,dispRenta:!!(ge("frt")&&ge("frt").checked)};
   if(id){
     for(var i=0;i<DB.items.length;i++) if(DB.items[i].id===id){
       DB.items[i]=Object.assign({},DB.items[i],d);
@@ -2178,14 +2189,28 @@ function RChecklist(){
     return;
   }
 
-  function fila(ok, texto, detalle){
+  // Cada paso lleva su boton A UN LADO, no en una lista aparte mas abajo: antes
+  // los pasos y los botones estaban separados y no se veia cual boton correspondia
+  // a cual paso.
+  function fila(ok, texto, detalle, btn){
     var icono=ok?'<span style="color:#4ade80">&#10004;</span>':'<span style="color:#f59e0b">&#9675;</span>';
-    return '<div style="display:flex;gap:9px;padding:6px 0;border-bottom:1px solid #1e1c18"><div style="font-size:15px;width:18px;text-align:center">'+icono+'</div><div style="flex:1"><div style="font-size:13px;color:'+(ok?"#8a8578":"#f0ebe3")+'">'+texto+'</div>'+(detalle?'<div class="sm mut">'+detalle+'</div>':'')+'</div></div>';
+    return '<div class="paso-cierre">'+
+      '<div class="paso-ico">'+icono+'</div>'+
+      '<div class="paso-txt"><div style="font-size:13px;color:'+(ok?"#8a8578":"#f0ebe3")+'">'+texto+'</div>'+
+      (detalle?'<div class="sm mut">'+detalle+'</div>':'')+'</div>'+
+      (btn?'<div class="paso-btn">'+btn+'</div>':'')+
+      '</div>';
   }
   function boton(texto, onclick, activo, colorAlt){
     var estilo = activo ? (colorAlt?('color:'+colorAlt+';border-color:'+colorAlt+'44'):'') : 'opacity:.4;pointer-events:none';
     var clase = activo && !colorAlt ? "btna" : "btno";
-    return '<button class="'+clase+'" style="'+estilo+'" onclick="'+onclick+'">'+texto+'</button>';
+    // El codigo va DENTRO de un atributo entre comillas dobles. Si ese codigo
+    // trae comillas dobles (por ejemplo cerrarMes("2026-10")), el atributo se
+    // corta en la primera y el boton queda MUERTO: se dibuja bien, se ve
+    // habilitado, y al hacer clic no pasa absolutamente nada. Convertirlas a
+    // &quot; hace que el navegador las lea como parte del valor.
+    var js=String(onclick).replace(/"/g,"&quot;");
+    return '<button class="'+clase+'" style="'+estilo+'" onclick="'+js+'">'+texto+'</button>';
   }
 
   // Respaldo de HOY: la red de seguridad se verifica al INICIO, antes de tocar nada
@@ -2211,25 +2236,28 @@ function RChecklist(){
     h+='<div class="sm mut" style="margin-bottom:10px">Sigue estos pasos EN ORDEN. Cada boton se activa cuando corresponde.</div>';
   }
 
-  h+=fila(true, "1. Revisa y corrige las ventas del mes", "Cancela cualquier venta equivocada ANTES de continuar. Se hace desde el historial de abajo.");
-  h+=fila(yaCerrado||respaldoHoyOk, "2. Respalda", respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.");
-  h+=fila(yaCerrado||descargado, "3. Descarga el CSV del mes", descargado?"Descargado.":"Conserva el detalle completo de las ventas.");
-  h+=fila(yaCerrado, "4. Genera los reportes", "Reporte general de ventas y reporte de consignatarios del mes.");
-  h+=fila(yaCerrado, "5. Cierra el mes", "La deuda por proveedor queda calculada y fija en este paso.");
-  h+=fila(yaCerrado&&cerosPendientes===0, "6. Limpia las piezas vendidas del inventario", (cerosPendientes>0?(cerosPendientes+" pieza(s) en cero por limpiar."):"Sin piezas en cero pendientes.")+notaProtegidas);
-  h+=fila(excelHecho, "7. Genera el Excel de inventario (INV-Mes)", excelHecho?"Generado para "+nombreM+".":"Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.");
-
-  // Botones EN SECUENCIA, en el mismo orden que los pasos de arriba.
-  h+='<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">';
-  // Una vez cerrado el mes, los botones 1 a 5 ya no tienen nada que hacer y se
-  // apagan; los que siguen vivos son el 6 y el 7.
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("2. Respaldar ahora","respaldar()",!respaldoHoyOk&&!yaCerrado)+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("3. Descargar CSV del mes",'descargarMes("'+ymCerrar+'")',!descargado&&!yaCerrado)+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("4. Reporte general de ventas","reporteGeneralVentas()",descargado&&!yaCerrado)+boton("4. Reporte de consignatarios","reporteConsignatarios()",descargado&&!yaCerrado)+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("5. Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado)+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("6. Limpiar vendidos de todos los proveedores","limpiarCerosTodos()",yaCerrado,"#f59e0b")+'</div>';
-  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">'+boton("7. Excel INV-Mes",'respaldoInventarioProveedores("'+ymCerrar+'")',yaCerrado)+'</div>';
-  h+='</div>';
+  // Una vez cerrado el mes, los pasos 1 a 5 ya no tienen nada que hacer y sus
+  // botones se apagan; los que siguen vivos son el 6 y el 7.
+  h+=fila(true, "1. Revisa y corrige las ventas del mes",
+    "Cancela cualquier venta equivocada ANTES de continuar. Se hace desde el historial de abajo.", "");
+  h+=fila(yaCerrado||respaldoHoyOk, "2. Respalda",
+    respaldoHoyOk?("Respaldo de hoy hecho ("+ultimoResp+")."):"Tu red de seguridad: si algo falla en los pasos siguientes, este respaldo te permite recuperar todo.",
+    boton("Respaldar","respaldar()",!respaldoHoyOk&&!yaCerrado));
+  h+=fila(yaCerrado||descargado, "3. Descarga el CSV del mes",
+    descargado?"Descargado.":"Conserva el detalle completo de las ventas.",
+    boton("Descargar CSV",'descargarMes("'+ymCerrar+'")',!descargado&&!yaCerrado));
+  h+=fila(yaCerrado, "4. Genera los reportes",
+    "Reporte general de ventas y reporte de consignatarios del mes.",
+    boton("Ventas","reporteGeneralVentas()",descargado&&!yaCerrado)+boton("Consignatarios","reporteConsignatarios()",descargado&&!yaCerrado));
+  h+=fila(yaCerrado, "5. Cierra el mes",
+    "La deuda por proveedor queda calculada y fija en este paso.",
+    boton("Cerrar el mes",'cerrarMes("'+ymCerrar+'")',descargado&&!yaCerrado));
+  h+=fila(yaCerrado&&cerosPendientes===0, "6. Limpia las piezas vendidas del inventario",
+    (cerosPendientes>0?(cerosPendientes+" pieza(s) en cero por limpiar."):"Sin piezas en cero pendientes.")+notaProtegidas,
+    boton("Limpiar vendidos","limpiarCerosTodos()",yaCerrado,"#f59e0b"));
+  h+=fila(excelHecho, "7. Genera el Excel de inventario (INV-Mes)",
+    excelHecho?"Generado para "+nombreM+".":"Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.",
+    boton("Generar Excel",'respaldoInventarioProveedores("'+ymCerrar+'")',yaCerrado));
 
   el.innerHTML=h;
 }
@@ -2757,43 +2785,101 @@ function etiqGuardarMedida(){
 // Sin el segundo limite, una clave larga con precio de cinco cifras se sale de
 // la etiqueta en los rollos angostos.
 var PT_A_MM=25.4/72;
-function etiqPts(w,h,nClave,nPrecio){
+var ETIQ_RENTA_TXT="DISPONIBLE PARA RENTA";
+// En rollos angostos la leyenda completa no cabe legible, asi que se acorta por
+// pasos en vez de encogerla hasta volverla ilegible. En el rollo de 50 mm cabe
+// completa con holgura; estas versiones cortas son para medidas mas chicas.
+var ETIQ_RENTA_CORTA=["DISPONIBLE PARA RENTA","PARA RENTA","RENTA"];
+var ETIQ_RENTA_EM=0.73;   // Arial negra (0.62) + el espaciado entre letras (0.11)
+function etiqTextoRenta(utilW){
+  for(var i=0;i<ETIQ_RENTA_CORTA.length;i++){
+    var t=ETIQ_RENTA_CORTA[i];
+    var pt=utilW/(ETIQ_RENTA_EM*PT_A_MM*t.length);
+    if(pt>=5 || i===ETIQ_RENTA_CORTA.length-1) return t;
+  }
+  return ETIQ_RENTA_CORTA[ETIQ_RENTA_CORTA.length-1];
+}
+// La etiqueta lleva hasta cuatro renglones, en este orden:
+//    DISPONIBLE PARA RENTA   (solo si la pieza esta marcada; con linea punteada debajo)
+//    CLAVE
+//    PRECIO
+//    Talla: X                (solo si la pieza tiene talla)
+// La talla va con su palabra completa y en su propio renglon porque antes iba
+// pegada a la clave y se leia como si fuera parte del codigo.
+//
+// Cada tipo de letra sale del MENOR de dos limites: el alto disponible y el
+// ancho contra el texto mas largo del lote. Al final se comprueba que la suma
+// de los renglones quepa a lo alto, y si no, se reduce todo en proporcion.
+function etiqPts(w,h,nClave,nPrecio,nTalla,conRenta){
   var padX=Math.max(1.5,w*0.06), padY=Math.max(1.2,h*0.07);
   var utilW=w-padX*2, utilH=h-padY*2;
-  var util28=28-Math.max(1.2,28*0.07)*2;
-  // Courier New (monospace) ~0.60 em por caracter; Arial negra ~0.62 em.
-  var topeClave  = utilW/(0.60*PT_A_MM*Math.max(1,nClave||10));
-  var topePrecio = utilW/(0.62*PT_A_MM*Math.max(1,nPrecio||6));
-  var ptC=Math.max(5,Math.min(12, Math.min(w*0.21, topeClave)));
-  var ptP=Math.max(8,Math.min(34, Math.min(26*(utilH/util28), topePrecio)));
-  // El precio nunca debe quedar mas chico que la clave: es lo que lee el cliente.
+  var util25=25-Math.max(1.2,25*0.07)*2;   // referencia: el diseno aprobado a 50x25
+  // Courier New (monospace) ~0.60 em por caracter; Arial ~0.60; Arial negra ~0.62.
+  function topeAncho(nChars, em){ return utilW/(em*PT_A_MM*Math.max(1,nChars)); }
+  var ptC=Math.max(5,  Math.min(12,   Math.min(w*0.21, topeAncho(nClave||10, 0.60))));
+  var ptP=Math.max(8,  Math.min(30,   Math.min(18*(utilH/util25), topeAncho(nPrecio||6, 0.62))));
+  var ptT=Math.max(4.5,Math.min(10,   Math.min(ptC*0.82, topeAncho((nTalla||4)+7, 0.60))));
+  var ptR=conRenta ? Math.max(4,Math.min(8, topeAncho(etiqTextoRenta(utilW).length, ETIQ_RENTA_EM))) : 0;
+  // El precio nunca debe quedar mas chico que la clave: es lo que lee la clienta.
   if(ptP<ptC) ptC=Math.max(5,ptP*0.85);
-  return {ptC:ptC, ptP:ptP, padX:padX, padY:padY, gap:Math.max(0.5,h*0.055)};
+  // Separaciones entre renglones, en mm
+  var gR=conRenta?Math.max(0.6,h*0.048):0, gC=Math.max(0.5,h*0.040), gP=Math.max(0.5,h*0.040);
+  var lineaR=conRenta?0.7:0;   // espacio bajo la punteada
+  // ¿Cabe a lo alto? Si no, se encoge todo por igual.
+  function altoTotal(){
+    return (conRenta?(ptR*1.2*PT_A_MM+lineaR+gR):0) +
+           ptC*1.2*PT_A_MM + gC + ptP*1.0*PT_A_MM + (nTalla?(gP+ptT*1.2*PT_A_MM):0);
+  }
+  var f=altoTotal();
+  if(f>utilH){
+    var k=utilH/f;
+    ptC*=k; ptP*=k; ptT*=k; ptR*=k; gR*=k; gC*=k; gP*=k; lineaR*=k;
+  }
+  return {ptC:ptC, ptP:ptP, ptT:ptT, ptR:ptR, padX:padX, padY:padY,
+          gR:gR, gC:gC, gP:gP, lineaR:lineaR};
 }
-function etiqCSS(w,h,nClave,nPrecio){
-  var s=etiqPts(w,h,nClave,nPrecio);
-  var padX=s.padX, padY=s.padY, ptC=s.ptC, ptP=s.ptP, gap=s.gap;
+function etiqCSS(w,h,nClave,nPrecio,nTalla,conRenta){
+  var s=etiqPts(w,h,nClave,nPrecio,nTalla,conRenta);
   var css='@page{size:'+w+'mm '+h+'mm;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,Helvetica,sans-serif}';
-  css+='.tag{width:'+w+'mm;height:'+h+'mm;padding:'+padY.toFixed(2)+'mm '+padX.toFixed(2)+'mm;page-break-after:always;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;overflow:hidden}';
-  css+='.tc{font-size:'+ptC.toFixed(1)+'pt;font-weight:700;font-family:\'Courier New\',monospace;color:#000;letter-spacing:0.4pt;margin-bottom:'+gap.toFixed(2)+'mm;white-space:nowrap}';
-  css+='.tp{font-size:'+ptP.toFixed(1)+'pt;font-weight:900;color:#000;line-height:1;letter-spacing:-0.5pt;white-space:nowrap}';
+  css+='.tag{width:'+w+'mm;height:'+h+'mm;padding:'+s.padY.toFixed(2)+'mm '+s.padX.toFixed(2)+'mm;page-break-after:always;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;overflow:hidden;color:#000}';
+  // El margen derecho negativo absorbe el espacio que letter-spacing agrega
+  // DESPUES de la ultima letra, que si no empuja el ancho y desborda.
+  css+='.tr{font-size:'+s.ptR.toFixed(1)+'pt;font-weight:700;letter-spacing:0.11em;margin-right:-0.11em;white-space:nowrap;width:100%;border-bottom:0.3mm dashed #000;padding-bottom:'+s.lineaR.toFixed(2)+'mm;margin-bottom:'+s.gR.toFixed(2)+'mm}';
+  css+='.tc{font-size:'+s.ptC.toFixed(1)+'pt;font-weight:700;font-family:\'Courier New\',monospace;letter-spacing:0.4pt;white-space:nowrap;margin-bottom:'+s.gC.toFixed(2)+'mm}';
+  css+='.tp{font-size:'+s.ptP.toFixed(1)+'pt;font-weight:900;line-height:1;letter-spacing:-0.5pt;white-space:nowrap}';
+  css+='.tt{font-size:'+s.ptT.toFixed(1)+'pt;font-weight:600;white-space:nowrap;margin-top:'+s.gP.toFixed(2)+'mm}';
   return css;
 }
-// Texto de la clave tal como se imprime: CLAVE - TALLA
-function etiqTextoClave(it){
-  return String(it.sku||"")+(it.talla?" · "+it.talla:"");
-}
-// Estilo para TODO un lote: se mide contra la clave y el precio mas largos.
+// ¿Esta pieza se puede rentar? El dato vive en la pieza; mientras el sistema de
+// renta no exista, solo controla si la etiqueta lleva la leyenda.
+function esRentable(it){ return !!(it && it.dispRenta); }
+// Estilo para TODO un lote: se mide contra los textos mas largos del lote.
 function etiqCSSLote(items){
-  var m=etiqMedida(), nC=0, nP=0;
+  var m=etiqMedida(), nC=0, nP=0, nT=0, renta=false;
   for(var i=0;i<(items||[]).length;i++){
-    nC=Math.max(nC, etiqTextoClave(items[i]).length);
-    nP=Math.max(nP, fmt(items[i].precioVenta).length);
+    var it=items[i];
+    nC=Math.max(nC, String(it.sku||"").length);
+    nP=Math.max(nP, fmt(it.precioVenta).length);
+    nT=Math.max(nT, String(it.talla||"").length);
+    if(esRentable(it)) renta=true;
   }
-  return etiqCSS(m.w, m.h, nC||10, nP||6);
+  return etiqCSS(m.w, m.h, nC||10, nP||6, nT, renta);
 }
 function makeTag(it){
-  return {sku:esc(it.sku||""), precio:fmt(it.precioVenta), talla:esc(it.talla||""), css:etiqCSSLote([it])};
+  return {sku:esc(it.sku||""), precio:fmt(it.precioVenta), talla:esc(it.talla||""),
+          renta:esRentable(it), css:etiqCSSLote([it])};
+}
+// El contenido de UNA etiqueta, en el orden aprobado.
+function etiqCuerpo(it){
+  var h='';
+  if(esRentable(it)){
+    var m=etiqMedida();
+    h+='<div class="tr">'+etiqTextoRenta(m.w-Math.max(1.5,m.w*0.06)*2)+'</div>';
+  }
+  h+='<div class="tc">'+esc(it.sku||"")+'</div>';
+  h+='<div class="tp">'+fmt(it.precioVenta)+'</div>';
+  if(it.talla) h+='<div class="tt">Talla: '+esc(it.talla)+'</div>';
+  return '<div class="tag">'+h+'</div>';
 }
 function printTags(items, copies){
   if(!items.length){alert("Selecciona al menos una prenda");return;}
@@ -2802,10 +2888,7 @@ function printTags(items, copies){
   var t={css:etiqCSSLote(items)};
   var tags="";
   for(var r=0;r<copies;r++){
-    for(var i=0;i<items.length;i++){
-      var d=makeTag(items[i]);
-      tags+='<div class="tag"><div class="tc">'+d.sku+(d.talla?' &middot; '+d.talla:'')+'</div><span class="tp">'+d.precio+'</span></div>';
-    }
+    for(var i=0;i<items.length;i++) tags+=etiqCuerpo(items[i]);
   }
   var doc='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+t.css+'<\/style><\/head><body>'+tags+'<\/body><\/html>';
   var w=window.open("","_blank","width=480,height=480");
@@ -2855,16 +2938,23 @@ function epbPrev(){
   var m=etiqMedida();
   var anchoPx=150, altoPx=Math.round(anchoPx*(m.h/m.w));
   var escala=anchoPx/(m.w*3.7795);                 // px de pantalla por px de etiqueta real
-  var nC=0,nP=0;
-  for(var i=0;i<sel.length;i++){ nC=Math.max(nC,etiqTextoClave(sel[i]).length); nP=Math.max(nP,fmt(sel[i].precioVenta).length); }
-  var s=etiqPts(m.w, m.h, nC||10, nP||6);
-  var pxPrecio=Math.max(7,Math.round(s.ptP*1.333*escala));
-  var pxClave =Math.max(5,Math.round(s.ptC*1.333*escala));
+  var nC=0,nP=0,nT=0,renta=false;
+  for(var i=0;i<sel.length;i++){
+    nC=Math.max(nC,String(sel[i].sku||"").length);
+    nP=Math.max(nP,fmt(sel[i].precioVenta).length);
+    nT=Math.max(nT,String(sel[i].talla||"").length);
+    if(esRentable(sel[i])) renta=true;
+  }
+  var s=etiqPts(m.w, m.h, nC||10, nP||6, nT, renta);
+  var px=function(pt){ return Math.max(5,Math.round(pt*1.333*escala)); };
+  var mm=function(v){ return Math.max(1,Math.round(v*3.7795*escala)); };
   var h=""; for(var i=0;i<Math.min(sel.length,2);i++){
     var it=sel[i];
-    h+='<div style="background:#fff;border-radius:4px;color:#000;width:'+anchoPx+'px;height:'+altoPx+'px;margin-bottom:7px;display:flex;flex-direction:column;gap:'+Math.round(2*escala)+'px;align-items:center;justify-content:center;text-align:center;overflow:hidden">';
-    h+='<div style="font-size:'+pxClave+'px;font-weight:700;font-family:monospace;letter-spacing:0.4px;white-space:nowrap">'+esc(it.sku)+(it.talla?' &middot; '+esc(it.talla):'')+'</div>';
-    h+='<div style="font-size:'+pxPrecio+'px;font-weight:900;line-height:1;white-space:nowrap">'+fmt(it.precioVenta)+'</div>';
+    h+='<div style="background:#fff;border-radius:4px;color:#000;width:'+anchoPx+'px;height:'+altoPx+'px;margin-bottom:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;padding:'+mm(s.padY)+'px '+mm(s.padX)+'px">';
+    if(esRentable(it)) h+='<div style="font-size:'+px(s.ptR)+'px;font-weight:700;letter-spacing:.09em;white-space:nowrap;width:100%;border-bottom:1px dashed #000;padding-bottom:'+mm(s.lineaR)+'px;margin-bottom:'+mm(s.gR)+'px">'+etiqTextoRenta(m.w-Math.max(1.5,m.w*0.06)*2)+'</div>';
+    h+='<div style="font-size:'+px(s.ptC)+'px;font-weight:700;font-family:monospace;letter-spacing:0.4px;white-space:nowrap;margin-bottom:'+mm(s.gC)+'px">'+esc(it.sku)+'</div>';
+    h+='<div style="font-size:'+px(s.ptP)+'px;font-weight:900;line-height:1;white-space:nowrap">'+fmt(it.precioVenta)+'</div>';
+    if(it.talla) h+='<div style="font-size:'+px(s.ptT)+'px;font-weight:600;white-space:nowrap;margin-top:'+mm(s.gP)+'px">Talla: '+esc(it.talla)+'</div>';
     h+='</div>';
   }
   if(sel.length>2) h+='<div class="sm mut" style="margin-bottom:9px">...y '+(sel.length-2)+' mas</div>';
