@@ -2237,8 +2237,8 @@ function RChecklist(){
     // del mes si se puede hacer.
     if(mesReabrible(ymCerrar)){
       h+='<div style="padding:10px;background:#1a1510;border:1px solid #4a3a20;border-radius:8px;margin:0 0 10px">'+
-         '<div style="color:#f59e0b;font-size:13px;margin-bottom:4px"><b>'+nombreM+' se cerro sin ninguna venta.</b></div>'+
-         '<div class="sm mut" style="line-height:1.55;margin-bottom:8px">Lo mas probable es que haya sido por error. Mientras siga cerrado, el cierre de verdad al terminar el mes no se va a poder hacer, y la deuda a proveedores de este mes no se calcularia. El archivo de este mes no contiene nada, asi que reabrirlo no pierde ningun dato.</div>'+
+         '<div style="color:#f59e0b;font-size:13px;margin-bottom:4px"><b>'+nombreM+' se cerro en $0.</b></div>'+
+         '<div class="sm mut" style="line-height:1.55;margin-bottom:8px">Lo mas probable es que haya sido por error. Mientras siga cerrado, el cierre de verdad al terminar el mes no se va a poder hacer, y la deuda a proveedores de este mes no se calcularia. El resumen archivado de este mes no tiene ingreso, ni costo, ni deuda a proveedores, asi que reabrirlo no pierde nada.</div>'+
          boton("Reabrir "+nombreM,'reabrirMes("'+ymCerrar+'")',true,"#f59e0b")+'</div>';
     }
     h+='<div class="sm mut" style="margin-bottom:10px">El Reporte general de ventas y el de Consignatarios ya no estan disponibles para este mes: su detalle linea por linea se archivo al cerrar. Descargalos <b>antes</b> de cerrar el mes siguiente.</div>';
@@ -2617,9 +2617,21 @@ function archivoDe(ym){
   for(var i=0;i<(DB.archivo||[]).length;i++) if(DB.archivo[i].mes===ym) return DB.archivo[i];
   return null;
 }
+// El criterio NO es "cero ventas" sino "CERO DINERO". Al cerrar un mes de prueba
+// puede haber quedado archivada una venta de $0, y entonces el mes no se podia
+// reabrir aunque no contuviera nada de valor. Lo que se perderia al reabrir es
+// el resumen archivado: si no hay ingreso, ni costo, ni deuda a proveedores, ni
+// dinero por ningun metodo de pago, ese resumen no dice nada y descartarlo no
+// pierde informacion. Con un solo peso de por medio, NO se reabre.
 function mesVacio(a){
   if(!a) return false;
-  return (a.ventas||0)===0 && (a.piezas||0)===0 && Math.abs(a.ingreso||0)<0.005 && Math.abs(a.costo||0)<0.005;
+  var cero=function(v){ return Math.abs(v||0)<0.005; };
+  if(!cero(a.ingreso)||!cero(a.costo)||!cero(a.ganancia)||!cero(a.total)) return false;
+  if(!cero(a.efectivo)||!cero(a.tarjeta)||!cero(a.transferencia)) return false;
+  if(!cero(a.devoluciones)||!cero(a.abonoParcial)||!cero(a.saldoRetenido)) return false;
+  var pp=a.porProveedor||{};
+  for(var k in pp) if(!cero(pp[k])) return false;
+  return true;
 }
 function mesReabrible(ym){ return mesVacio(archivoDe(ym)); }
 function reabrirMes(ym){
@@ -2629,7 +2641,11 @@ function reabrirMes(ym){
     alert("No se puede reabrir "+nombreMes(ym)+": tiene ventas archivadas.\n\nAl cerrarlo, su detalle linea por linea se guardo como resumen y las ventas salieron de los datos activos. Reabrirlo dejaria el mes vacio y descuadrado.");
     return;
   }
-  if(!confirm("Reabrir "+nombreMes(ym)+"?\n\nEse mes se cerro sin ninguna venta registrada, asi que no hay nada que perder: solo se quita la marca de cerrado para que puedas hacer el cierre de verdad cuando termine el mes.")) return;
+  var nReg=(a.ventas||0), nPz=(a.piezas||0);
+  var detalle = (nReg||nPz)
+    ? ("Ese mes quedo archivado con "+nReg+" registro(s) y "+nPz+" pieza(s), pero todo en $0: sin ingreso, sin costo y sin deuda a proveedores. Al reabrirlo se descarta ese resumen vacio.")
+    : "Ese mes se cerro sin ninguna venta registrada, asi que no hay nada que descartar.";
+  if(!confirm("Reabrir "+nombreMes(ym)+"?\n\n"+detalle+"\n\nSolo se quita la marca de cerrado, para que puedas hacer el cierre de verdad cuando termine el mes.")) return;
   for(var i=DB.archivo.length-1;i>=0;i--) if(DB.archivo[i].mes===ym) DB.archivo.splice(i,1);
   try{ if(window._mesesDescargados) window._mesesDescargados[ym]=false; }catch(e){}
   dbSave();
