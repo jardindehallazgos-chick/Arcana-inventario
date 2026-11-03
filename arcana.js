@@ -2255,9 +2255,14 @@ function RChecklist(){
   h+=fila(yaCerrado&&cerosPendientes===0, "6. Limpia las piezas vendidas del inventario",
     (cerosPendientes>0?(cerosPendientes+" pieza(s) en cero por limpiar."):"Sin piezas en cero pendientes.")+notaProtegidas,
     boton("Limpiar vendidos","limpiarCerosTodos()",yaCerrado,"#f59e0b"));
+  // El Excel SIEMPRE se puede generar, aunque el mes no este cerrado y aunque
+  // falten los pasos anteriores. No depende de ellos: solo LEE el inventario y
+  // ya de por si omite las piezas en cero, asi que el resultado es el mismo se
+  // haya hecho o no la limpieza del paso 6. Tenerlo bloqueado solo estorbaba:
+  // es un archivo que se necesita durante el mes, no nada mas al cerrarlo.
   h+=fila(excelHecho, "7. Genera el Excel de inventario (INV-Mes)",
-    excelHecho?"Generado para "+nombreM+".":"Refleja el inventario ya limpio de piezas vendidas, listo para tu archivo mensual.",
-    boton("Generar Excel",'respaldoInventarioProveedores("'+ymCerrar+'")',yaCerrado));
+    (excelHecho?"Generado para "+nombreM+". ":"")+"Toma el inventario disponible de hoy. Se puede generar cuando quieras, sin esperar al cierre.",
+    boton("Generar Excel",'respaldoInventarioProveedores("'+ymCerrar+'")',true));
 
   el.innerHTML=h;
 }
